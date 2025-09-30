@@ -13,7 +13,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Import routers
-from app.api.v1 import polls, ballots, results
+from app.api.v1 import polls, ballots, results, pairwise_ballots, exports, voters
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -50,6 +50,9 @@ app.add_middleware(
 app.include_router(polls.router, prefix="/api/v1/polls", tags=["polls"])
 app.include_router(ballots.router, prefix="/api/v1/ballots", tags=["ballots"])
 app.include_router(results.router, prefix="/api/v1/results", tags=["results"])
+app.include_router(pairwise_ballots.router, prefix="/api/v1/pairwise-ballots", tags=["pairwise-ballots"] )
+app.include_router(exports.router, prefix="/api/v1/exports", tags=["exports"])
+app.include_router(voters.router, prefix="/api/v1", tags=["voters"])
 
 @app.get("/health")
 async def health_check():

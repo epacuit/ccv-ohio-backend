@@ -8,6 +8,24 @@ import sys
 from pathlib import Path
 from dotenv import load_dotenv
 
+from alembic import context
+from sqlalchemy import engine_from_config, pool
+import os
+
+# Your models
+from app.database import Base  # or wherever your Base is
+
+config = context.config
+
+# Override sqlalchemy.url with environment variable
+config.set_main_option(
+    'sqlalchemy.url',
+    os.environ.get('DATABASE_URL', '')
+)
+
+target_metadata = Base.metadata
+
+# ... rest of your env.py
 # Add parent directory to path so we can import app
 sys.path.append(str(Path(__file__).parent.parent))
 

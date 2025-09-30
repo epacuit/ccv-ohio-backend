@@ -12,7 +12,7 @@ import os
 import json
 
 from app.db import get_db
-from app.models import Poll, Ballot, Voter
+from app.models import Poll, Ballot
 
 router = APIRouter()
 
@@ -86,7 +86,7 @@ async def create_poll(
     poll_data: Dict[str, Any],
     db: AsyncSession = Depends(get_db)
 ):
-    """Create a new poll with properly structured candidates and voters"""
+    """Create a new poll with properly structured candidates"""
     
     # Generate unique short_id
     while True:
@@ -106,16 +106,13 @@ async def create_poll(
     # CRITICAL: Ensure all candidates have IDs before storing
     candidates_with_ids = ensure_candidates_have_ids(poll_data.get('candidates', []))
     
-    # Extract voter emails BEFORE creating the poll
-    voter_emails = poll_data.pop('voter_emails', [])
-    
     # Create poll
     poll = Poll(
         short_id=short_id,
         slug=slug,
         title=poll_data['title'],
         description=poll_data.get('description'),
-        candidates=candidates_with_ids,
+        candidates=candidates_with_ids,  # Guaranteed to have IDs
         settings=poll_data.get('settings', {}),
         is_private=poll_data.get('is_private', False),
         status='open',
@@ -129,40 +126,7 @@ async def create_poll(
     await db.commit()
     await db.refresh(poll)
     
-    # ADD VOTERS FOR PRIVATE POLLS
-    voters_added = 0
-    if poll.is_private and voter_emails:
-        import hashlib
-        from datetime import datetime, timezone
-        
-        for email in voter_emails:
-            email = email.lower().strip()
-            
-            # Check if voter already exists (shouldn't happen on creation, but just in case)
-            stmt = select(Voter).where(
-                Voter.poll_id == poll.id,
-                Voter.email == email
-            )
-            result = await db.execute(stmt)
-            existing = result.scalar_one_or_none()
-            
-            if not existing:
-                # Create voter
-                voter = Voter(
-                    poll_id=poll.id,
-                    email=email,
-                    email_hash=hashlib.sha256(email.encode()).hexdigest(),
-                    token=secrets.token_urlsafe(32),
-                    invitation_sent=False,
-                    created_at=datetime.now(timezone.utc)
-                )
-                db.add(voter)
-                voters_added += 1
-        
-        await db.commit()
-        print(f"✅ Added {voters_added} voters to private poll {poll.short_id}")
-    
-    # Return with candidates and voter count
+    # Return with candidates to confirm IDs
     return {
         "id": str(poll.id),
         "short_id": poll.short_id,
@@ -170,8 +134,7 @@ async def create_poll(
         "admin_token": poll.admin_token,
         "url": f"{BASE_URL}/p/{poll.short_id}",
         "qr_code": f"{BASE_URL}/qr/{poll.short_id}.png",
-        "candidates": poll.candidates,
-        "voters_added": voters_added  # Include count of voters added
+        "candidates": poll.candidates  # Include for verification
     }
 
 @router.get("/by-owner")
@@ -239,11 +202,6 @@ async def get_poll(
     if not poll:
         raise HTTPException(status_code=404, detail="Poll not found")
     
-    # Calculate effective num_ranks
-    num_ranks = poll.settings.get('num_ranks') if poll.settings else None
-    if num_ranks is None:
-        num_ranks = len(poll.candidates)
-    
     # Return poll - candidates already have IDs from creation
     return {
         "id": str(poll.id),
@@ -252,7 +210,6 @@ async def get_poll(
         "description": poll.description,
         "candidates": poll.candidates,  # Has IDs from creation
         "settings": poll.settings,
-        "num_ranks": num_ranks,  # Include num_ranks for frontend
         "status": get_poll_status(poll),
         "is_private": poll.is_private,
         "created_at": poll.created_at.isoformat() if poll.created_at else None,
@@ -266,7 +223,7 @@ async def update_poll(
     admin_token: str = Query(...),
     db: AsyncSession = Depends(get_db)
 ):
-    """Update poll - maintains candidate ID consistency and prevents illegal changes"""
+    """Update poll - maintains candidate ID consistency"""
     
     # Find poll
     poll = None
@@ -286,56 +243,8 @@ async def update_poll(
     if poll.admin_token != admin_token:
         raise HTTPException(status_code=403, detail="Invalid admin token")
     
-    # Check if poll has votes
-    stmt = select(func.count(Ballot.id)).where(Ballot.poll_id == poll.id)
-    result = await db.execute(stmt)
-    ballot_count = result.scalar_one()
-    
-    # If updating candidates and votes exist, validate no additions/removals
-    if 'candidates' in poll_update and ballot_count > 0:
-        existing_ids = {c.get('id') for c in poll.candidates if isinstance(c, dict) and c.get('id')}
-        new_ids = {c.get('id') for c in poll_update['candidates'] if isinstance(c, dict) and c.get('id')}
-        
-        # Check if any candidates were added or removed
-        if existing_ids != new_ids:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Cannot add or remove candidates after voting has started. This poll has {ballot_count} votes."
-            )
-        
-        # Ensure the order and count remains the same
-        if len(poll.candidates) != len(poll_update['candidates']):
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Cannot change the number of candidates after voting has started. This poll has {ballot_count} votes."
-            )
-        
-        # Allow name/description updates but keep the same IDs
-        updated_candidates = []
-        for orig_candidate in poll.candidates:
-            # Find the corresponding candidate in the update
-            matching_update = None
-            for upd_candidate in poll_update['candidates']:
-                if upd_candidate.get('id') == orig_candidate.get('id'):
-                    matching_update = upd_candidate
-                    break
-            
-            if matching_update:
-                # Update name/description but keep the original ID
-                updated_candidates.append({
-                    'id': orig_candidate['id'],  # Keep original ID
-                    'name': matching_update.get('name', orig_candidate.get('name')),
-                    'description': matching_update.get('description', orig_candidate.get('description')),
-                    'image_url': matching_update.get('image_url', orig_candidate.get('image_url'))
-                })
-            else:
-                # Keep original if no matching update found
-                updated_candidates.append(orig_candidate)
-        
-        poll_update['candidates'] = updated_candidates
-        
-    elif 'candidates' in poll_update and ballot_count == 0:
-        # No votes yet, ensure candidates have IDs
+    # If updating candidates, ensure they have IDs
+    if 'candidates' in poll_update:
         existing_ids = {c.get('id') for c in poll.candidates if isinstance(c, dict) and c.get('id')}
         updated_candidates = []
         next_index = len(poll.candidates)
@@ -347,6 +256,7 @@ async def update_poll(
                     updated_candidates.append(candidate)
                 else:
                     # No ID - assign one
+                    # Use next available index to avoid collisions
                     new_id = generate_candidate_id(next_index, False)
                     while new_id in existing_ids:
                         next_index += 1
@@ -385,12 +295,7 @@ async def update_poll(
     await db.commit()
     await db.refresh(poll)
     
-    return {
-        "success": True, 
-        "message": "Poll updated", 
-        "candidates": poll.candidates,
-        "has_votes": ballot_count > 0
-    }
+    return {"success": True, "message": "Poll updated", "candidates": poll.candidates}
 
 @router.delete("/{poll_id}")
 async def delete_poll(
@@ -458,143 +363,6 @@ async def close_poll(
     
     return {"success": True, "message": "Poll closed"}
 
-# Add these endpoints to your existing polls.py file after the close_poll endpoint
-
-@router.post("/{poll_id}/toggle-status")
-async def toggle_poll_status(
-    poll_id: str,
-    admin_token: str = Query(...),
-    db: AsyncSession = Depends(get_db)
-):
-    """Toggle poll open/closed status - admin only"""
-    from datetime import datetime, timezone
-    
-    # Find poll
-    poll = None
-    try:
-        poll_uuid = UUID(poll_id)
-        stmt = select(Poll).where(Poll.id == poll_uuid)
-    except ValueError:
-        stmt = select(Poll).where(Poll.short_id == poll_id)
-    
-    result = await db.execute(stmt)
-    poll = result.scalar_one_or_none()
-    
-    if not poll:
-        raise HTTPException(status_code=404, detail="Poll not found")
-    
-    # Verify admin token
-    if poll.admin_token != admin_token:
-        raise HTTPException(status_code=403, detail="Invalid admin token")
-    
-    # Toggle status
-    new_status = 'closed' if poll.status == 'open' else 'open'
-    poll.status = new_status
-    poll.updated_at = datetime.now(timezone.utc)
-    
-    await db.commit()
-    
-    return {"success": True, "status": new_status, "message": f"Poll {new_status}"}
-
-@router.get("/{poll_id}/statistics")
-async def get_poll_statistics(
-    poll_id: str,
-    admin_token: str = Query(...),
-    db: AsyncSession = Depends(get_db)
-):
-    """Get detailed poll statistics - admin only"""
-    from datetime import datetime, timezone, timedelta
-    
-    # Find poll and verify admin
-    poll = None
-    try:
-        poll_uuid = UUID(poll_id)
-        stmt = select(Poll).where(Poll.id == poll_uuid)
-    except ValueError:
-        stmt = select(Poll).where(Poll.short_id == poll_id)
-    
-    result = await db.execute(stmt)
-    poll = result.scalar_one_or_none()
-    
-    if not poll:
-        raise HTTPException(status_code=404, detail="Poll not found")
-    
-    if poll.admin_token != admin_token:
-        raise HTTPException(status_code=403, detail="Invalid admin token")
-    
-    # Get ballot statistics
-    stmt = select(
-        func.count(Ballot.id).label('unique_voters'),
-        func.sum(Ballot.count).label('total_ballots'),
-        func.max(Ballot.updated_at).label('last_vote_time'),
-        func.min(Ballot.submitted_at).label('first_vote_time')
-    ).where(Ballot.poll_id == poll.id)
-    
-    result = await db.execute(stmt)
-    stats = result.one()
-    
-    # Calculate voting rate
-    voting_rate = 0
-    if stats.first_vote_time and stats.last_vote_time and stats.unique_voters > 0:
-        time_span = (stats.last_vote_time - stats.first_vote_time).total_seconds() / 3600
-        if time_span > 0:
-            voting_rate = stats.unique_voters / time_span
-    
-    return {
-        "total_votes": int(stats.total_ballots) if stats.total_ballots else 0,
-        "unique_voters": int(stats.unique_voters) if stats.unique_voters else 0,
-        "last_vote_time": stats.last_vote_time.isoformat() if stats.last_vote_time else None,
-        "first_vote_time": stats.first_vote_time.isoformat() if stats.first_vote_time else None,
-        "voting_rate": round(voting_rate, 2),
-        "poll_status": get_poll_status(poll),
-    }
-
-@router.post("/authenticate-admin")
-async def authenticate_admin(
-    auth_data: Dict[str, Any],
-    db: AsyncSession = Depends(get_db)
-):
-    """Authenticate admin with password or token"""
-    poll_id = auth_data.get('poll_id')
-    admin_token = auth_data.get('admin_token')
-    password = auth_data.get('password')
-    
-    # Find poll
-    poll = None
-    try:
-        poll_uuid = UUID(poll_id)
-        stmt = select(Poll).where(Poll.id == poll_uuid)
-    except ValueError:
-        stmt = select(Poll).where(Poll.short_id == poll_id)
-    
-    result = await db.execute(stmt)
-    poll = result.scalar_one_or_none()
-    
-    if not poll:
-        raise HTTPException(status_code=404, detail="Poll not found")
-    
-    # Check authentication
-    authenticated = False
-    auth_method = None
-    
-    if admin_token and poll.admin_token == admin_token:
-        authenticated = True
-        auth_method = "token"
-    elif password and poll.password_hash:
-        # You would need to implement password hashing/checking here
-        # For now, simple comparison (you should use bcrypt or similar in production)
-        if poll.password_hash == password:  # This should be proper hash comparison
-            authenticated = True
-            auth_method = "password"
-    
-    if not authenticated:
-        raise HTTPException(status_code=403, detail="Invalid credentials")
-    
-    return {
-        "authenticated": True,
-        "auth_method": auth_method,
-        "admin_token": poll.admin_token  # Return token for future requests
-    }
 @router.get("/{poll_id}/export")
 async def export_poll_csv(
     poll_id: str,
@@ -691,126 +459,3 @@ async def export_poll_csv(
             "Content-Disposition": f"attachment; filename={filename}"
         }
     )
-
-@router.post("/polls/{poll_id}/send-invitations")
-async def send_poll_invitations(
-    poll_id: str,
-    request_data: Dict[str, Any],
-    db: AsyncSession = Depends(get_db)
-):
-    """Send or resend invitations to voters - admin only"""
-    
-    admin_token = request_data.get('admin_token')
-    emails = request_data.get('emails', [])  # If empty, send to all unsent
-    
-    # Find poll
-    poll = None
-    try:
-        poll_uuid = UUID(poll_id)
-        stmt = select(Poll).where(Poll.id == poll_uuid)
-    except ValueError:
-        stmt = select(Poll).where(Poll.short_id == poll_id)
-    
-    result = await db.execute(stmt)
-    poll = result.scalar_one_or_none()
-    
-    if not poll:
-        raise HTTPException(status_code=404, detail="Poll not found")
-    
-    # Verify admin token
-    if poll.admin_token != admin_token:
-        raise HTTPException(status_code=403, detail="Invalid admin token")
-    
-    # Get voters to send to
-    if emails:
-        # Send to specific emails
-        stmt = select(Voter).where(
-            Voter.poll_id == poll.id,
-            Voter.email.in_([e.lower().strip() for e in emails])
-        )
-    else:
-        # Send to all who haven't been invited
-        stmt = select(Voter).where(
-            Voter.poll_id == poll.id,
-            Voter.invitation_sent == False
-        )
-    
-    result = await db.execute(stmt)
-    voters = result.scalars().all()
-    
-    sent_to = []
-    failed = []
-    
-    # Actually send emails via SMTP to MailHog
-    import smtplib
-    from email.mime.text import MIMEText
-    from email.mime.multipart import MIMEMultipart
-    
-    BASE_URL = os.getenv("BASE_URL", "http://localhost:3000")
-    
-    for voter in voters:
-        voting_link = f"{BASE_URL}/vote/{poll.short_id}?token={voter.token}"
-        
-        # Create actual email
-        msg = MIMEMultipart('alternative')
-        msg['Subject'] = f"You're invited to vote in: {poll.title}"
-        msg['From'] = "noreply@rankedchoice.app"
-        msg['To'] = voter.email
-        
-        # Plain text version
-        text_body = f"""You've been invited to vote in: {poll.title}
-
-Click here to vote: {voting_link}
-
-This is a private poll. Only invited voters can participate.
-"""
-        
-        # HTML version  
-        html_body = f"""
-<html>
-  <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-    <h2 style="color: #333;">You're invited to vote!</h2>
-    <p><strong>Poll:</strong> {poll.title}</p>
-    <p style="margin: 30px 0;">
-      <a href="{voting_link}" style="background-color: #1976d2; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block;">
-        Vote Now
-      </a>
-    </p>
-    <p style="color: #666;">Or copy this link:<br>
-    <code style="background: #f5f5f5; padding: 8px; display: block; margin: 10px 0; word-break: break-all;">{voting_link}</code>
-    </p>
-    <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
-    <p style="color: #999; font-size: 12px;">This is a private poll. Only invited voters can participate.</p>
-  </body>
-</html>
-"""
-        
-        msg.attach(MIMEText(text_body, 'plain'))
-        msg.attach(MIMEText(html_body, 'html'))
-        
-        try:
-            # Connect to MailHog SMTP server on port 1025
-            smtp = smtplib.SMTP('localhost', 1025)
-            smtp.send_message(msg)
-            smtp.quit()
-            
-            # Mark as sent
-            voter.invitation_sent = True
-            voter.invitation_sent_at = datetime.now(timezone.utc)
-            sent_to.append(voter.email)
-            print(f"✓ Email sent to {voter.email}")
-            
-        except Exception as e:
-            failed.append(voter.email)
-            print(f"✗ Failed to send email to {voter.email}: {e}")
-            # Don't mark as sent if it failed
-    
-    await db.commit()
-    
-    return {
-        "success": True,
-        "sent_to": sent_to,
-        "failed": failed,
-        "message": f"Sent {len(sent_to)} invitation(s)" + (f", {len(failed)} failed" if failed else ""),
-        "note": "Check MailHog at http://localhost:8025 to see emails"
-    }

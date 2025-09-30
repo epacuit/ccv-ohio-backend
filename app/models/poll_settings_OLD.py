@@ -11,7 +11,6 @@ class PollSettings(BaseModel):
     results_visibility: str = "public"  # public|voters|owner
     anonymize_voters: bool = True
     ballot_processing_rule: str = "alaska"  # "alaska" or "truncation"
-    num_ranks: Optional[int] = None  # Number of ranking columns. None = use number of candidates
     
     class Config:
         # Allow extra fields for future expansion

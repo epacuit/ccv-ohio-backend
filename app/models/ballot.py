@@ -12,11 +12,13 @@ class Ballot(Base):
     
     # Rankings as JSONB
     rankings = Column(JSONB, nullable=False)
-    # Structure: [{"option_id": "uuid", "rank": 1}, {"option_id": "uuid", "rank": 2}]
+    # Structure: [{"candidate_id": "uuid", "rank": 1}, {"candidate_id": "uuid", "rank": 2}]
     
     # Count for aggregation
     count = Column(Integer, default=1, nullable=False)
     
+    write_ins = Column(JSONB, nullable=True, default=[])
+
     # Voter identification
     voter_fingerprint = Column(String(64), nullable=True)
     voter_token = Column(String(64), nullable=True)

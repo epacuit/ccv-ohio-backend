@@ -15,3 +15,6 @@ pytest
 pytest-asyncio
 python-dotenv
 httpx
+nltk>=3.8.1
+reportlab
+qrcode

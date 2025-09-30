@@ -1,4 +1,4 @@
-# app/api/v1/ballots.py - WITH CACHE INVALIDATION AND TOKEN SUPPORT
+# app/api/v1/ballots.py - WITH CACHE INVALIDATION
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, update
@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 import hashlib
 
 from app.db import get_db
-from app.models import Ballot, Poll, Result, Voter
+from app.models import Ballot, Poll, Result
 
 router = APIRouter()
 
@@ -101,25 +101,6 @@ async def submit_ballot(
         await db.commit()
         return {"success": False, "message": "Poll is closed"}
     
-    # Extract voter token
-    voter_token = ballot_data.get('voter_token')
-    
-    # For private polls, validate token
-    if poll.is_private:
-        if not voter_token:
-            raise HTTPException(status_code=403, detail="Voting token required for private poll")
-        
-        # Check if token is valid in Voter table
-        stmt = select(Voter).where(
-            Voter.poll_id == poll.id,
-            Voter.token == voter_token
-        )
-        result = await db.execute(stmt)
-        voter = result.scalar_one_or_none()
-        
-        if not voter:
-            raise HTTPException(status_code=403, detail="Invalid voting token")
-    
     # CRITICAL: Ensure write-ins have proper IDs
     write_ins = ballot_data.get('write_ins', [])
     if write_ins:
@@ -138,6 +119,7 @@ async def submit_ballot(
     
     # Hash sensitive data
     voter_fingerprint = hash_fingerprint(ballot_data.get('voter_fingerprint'))
+    voter_token = ballot_data.get('voter_token')
     ip_hash = hash_ip(ballot_data.get('ip_address'))
     
     # Check for existing ballot
@@ -151,10 +133,6 @@ async def submit_ballot(
         )
         result = await db.execute(stmt)
         existing_ballot = result.scalar_one_or_none()
-        
-        if existing_ballot:
-            raise HTTPException(status_code=400, detail="This token has already been used to vote")
-            
     elif voter_fingerprint:
         # Public poll - check by fingerprint
         stmt = select(Ballot).where(
@@ -164,8 +142,8 @@ async def submit_ballot(
         result = await db.execute(stmt)
         existing_ballot = result.scalar_one_or_none()
     
-    if existing_ballot and not poll.is_private:
-        # Update existing ballot (only for public polls)
+    if existing_ballot:
+        # Update existing ballot
         existing_ballot.rankings = ballot_data['rankings']
         existing_ballot.write_ins = write_ins  # Now with proper IDs
         existing_ballot.updated_at = datetime.now(timezone.utc)
@@ -217,65 +195,6 @@ async def submit_ballot(
                 "rankings": ballot.rankings,
                 "write_ins": ballot.write_ins
             }
-        }
-
-@router.get("/check")
-async def check_existing_ballot(
-    poll_id: str = Query(...),
-    voter_token: str = Query(...),
-    db: AsyncSession = Depends(get_db)
-):
-    """Check if a voter token has already been used to vote in a private poll"""
-    
-    # Find the poll
-    poll = None
-    try:
-        poll_uuid = UUID(poll_id)
-        stmt = select(Poll).where(Poll.id == poll_uuid)
-    except ValueError:
-        stmt = select(Poll).where(Poll.short_id == poll_id)
-    
-    result = await db.execute(stmt)
-    poll = result.scalar_one_or_none()
-    
-    if not poll:
-        raise HTTPException(status_code=404, detail="Poll not found")
-    
-    # For private polls, verify the token is valid
-    if poll.is_private:
-        stmt = select(Voter).where(
-            Voter.poll_id == poll.id,
-            Voter.token == voter_token
-        )
-        result = await db.execute(stmt)
-        voter = result.scalar_one_or_none()
-        
-        if not voter:
-            raise HTTPException(status_code=403, detail="Invalid voting token")
-    
-    # Check if this token has voted
-    stmt = select(Ballot).where(
-        Ballot.poll_id == poll.id,
-        Ballot.voter_token == voter_token
-    )
-    result = await db.execute(stmt)
-    ballot = result.scalar_one_or_none()
-    
-    if ballot:
-        # Return the ballot data
-        return {
-            "has_voted": True,
-            "ballot": {
-                "id": str(ballot.id),
-                "submitted_at": ballot.submitted_at.isoformat() if ballot.submitted_at else None,
-                "rankings": ballot.rankings,
-                "write_ins": ballot.write_ins if ballot.write_ins else []
-            }
-        }
-    else:
-        return {
-            "has_voted": False,
-            "ballot": None
         }
 
 @router.get("/poll/{poll_id}")
@@ -407,48 +326,6 @@ async def bulk_import_ballots(
         if ballot_data.get('write_ins'):
             ballot_data['write_ins'] = ensure_write_ins_have_ids(ballot_data['write_ins'])
     
-    # Detect maximum rank in imported data
-    max_rank_found = 0
-    rank_4_count = 0
-    for ballot_data in ballots_data:
-        ballot_max = 0
-        for ranking in ballot_data.get('rankings', []):
-            rank = ranking.get('rank', 0)
-            max_rank_found = max(max_rank_found, rank)
-            ballot_max = max(ballot_max, rank)
-        if ballot_max == 4:
-            rank_4_count += ballot_data.get('count', 1)
-    
-    # Log what we found
-    print(f"\n📊 IMPORT STATISTICS for poll {poll.short_id}:")
-    print(f"   - Total ballot patterns: {len(ballots_data)}")
-    print(f"   - Maximum rank found: {max_rank_found}")
-    print(f"   - Ballots with rank 4: {rank_4_count} votes")
-    print(f"   - Poll has {len(poll.candidates)} candidates")
-    
-    # ALWAYS update poll's num_ranks based on the data
-    # The poll should display at least as many columns as the highest rank found
-    num_ranks_needed = max(max_rank_found, len(poll.candidates))
-    current_num_ranks = poll.settings.get('num_ranks') if poll.settings else None
-    
-    # Update if needed
-    if current_num_ranks != num_ranks_needed:
-        if not poll.settings:
-            poll.settings = {}
-        poll.settings['num_ranks'] = num_ranks_needed
-        poll.updated_at = datetime.now(timezone.utc)
-        
-        print(f"\n✅ POLL {poll.short_id} RANK CONFIGURATION:")
-        print(f"   - Max rank in imported data: {max_rank_found}")
-        print(f"   - Number of candidates: {len(poll.candidates)}")
-        print(f"   - Setting num_ranks = {num_ranks_needed} (was {current_num_ranks})")
-        if max_rank_found > len(poll.candidates):
-            print(f"   - ⚠️ Alaska 2022 scenario detected: rank {max_rank_found} for {len(poll.candidates)} candidates")
-            print(f"   - Frontend will display {num_ranks_needed} columns to show all votes")
-        
-        await db.commit()
-        await db.refresh(poll)
-    
     # Aggregate identical ballots for efficiency
     from collections import defaultdict
     ranking_counts = defaultdict(int)
@@ -507,19 +384,12 @@ async def bulk_import_ballots(
     await invalidate_results_cache(poll_id, db)
     await db.commit()
     
-    # Get the updated poll's num_ranks for confirmation
-    final_num_ranks = poll.settings.get('num_ranks') if poll.settings else len(poll.candidates)
-    
     return {
         "success": True,
         "message": f"Imported {total_votes} votes in {created_count} ballot records",
         "import_batch_id": import_batch_id,
         "unique_patterns": created_count,
-        "total_votes": total_votes,
-        "poll_num_ranks": final_num_ranks,
-        "max_rank_found": max_rank_found,
-        "num_candidates": len(poll.candidates),
-        "note": f"Poll will display {final_num_ranks} ranking columns"
+        "total_votes": total_votes
     }
 
 @router.delete("/poll/{poll_id}/clear")
