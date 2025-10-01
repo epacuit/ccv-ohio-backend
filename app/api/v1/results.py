@@ -132,6 +132,12 @@ async def get_results(
     result = await db.execute(stmt)
     poll = result.scalar_one_or_none()
     
+    # Try as slug if still not found
+    if not poll:
+        stmt = select(Poll).where(Poll.slug == poll_id)
+        result = await db.execute(stmt)
+        poll = result.scalar_one_or_none()
+    
     if not poll:
         raise HTTPException(status_code=404, detail="Poll not found")
     
@@ -160,6 +166,12 @@ async def force_calculate_results(
     
     result = await db.execute(stmt)
     poll = result.scalar_one_or_none()
+    
+    # Try as slug if still not found
+    if not poll:
+        stmt = select(Poll).where(Poll.slug == poll_id)
+        result = await db.execute(stmt)
+        poll = result.scalar_one_or_none()
     
     if not poll:
         raise HTTPException(status_code=404, detail="Poll not found")
@@ -197,6 +209,12 @@ async def get_results_status(
     
     result = await db.execute(stmt)
     poll = result.scalar_one_or_none()
+    
+    # Try as slug if still not found
+    if not poll:
+        stmt = select(Poll).where(Poll.slug == poll_id)
+        result = await db.execute(stmt)
+        poll = result.scalar_one_or_none()
     
     if not poll:
         raise HTTPException(status_code=404, detail="Poll not found")

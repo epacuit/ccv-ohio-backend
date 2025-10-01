@@ -102,6 +102,15 @@ async def create_poll(
         allowed_emails = json.loads(os.getenv("SLUG_ALLOWED_EMAILS", "[]"))
         if poll_data.get('owner_email') not in allowed_emails:
             slug = None
+        else:
+            # Check if slug is already taken
+            stmt = select(Poll).where(Poll.slug == slug)
+            result = await db.execute(stmt)
+            if result.scalar_one_or_none():
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Slug '{slug}' is already taken. Please choose a different one."
+                )
     
     # CRITICAL: Ensure all candidates have IDs before storing
     candidates_with_ids = ensure_candidates_have_ids(poll_data.get('candidates', []))
@@ -207,7 +216,8 @@ async def get_polls_by_owner(
             "title": p.title,
             "status": get_poll_status(p),
             "created_at": p.created_at.isoformat() if p.created_at else None,
-            "total_ballots": int(total_ballots)
+            "total_ballots": int(total_ballots),
+            "admin_token": p.admin_token  # ADD THIS LINE
         })
     
     return poll_list
@@ -235,6 +245,12 @@ async def get_poll(
             poll = result.scalar_one_or_none()
         except ValueError:
             pass
+    
+    # Try as slug if still not found
+    if not poll:
+        stmt = select(Poll).where(Poll.slug == poll_id)
+        result = await db.execute(stmt)
+        poll = result.scalar_one_or_none()
     
     if not poll:
         raise HTTPException(status_code=404, detail="Poll not found")
@@ -278,6 +294,12 @@ async def update_poll(
     
     result = await db.execute(stmt)
     poll = result.scalar_one_or_none()
+    
+    # Try as slug if not found
+    if not poll:
+        stmt = select(Poll).where(Poll.slug == poll_id)
+        result = await db.execute(stmt)
+        poll = result.scalar_one_or_none()
     
     if not poll:
         raise HTTPException(status_code=404, detail="Poll not found")
@@ -411,6 +433,12 @@ async def delete_poll(
     result = await db.execute(stmt)
     poll = result.scalar_one_or_none()
     
+    # Try as slug if not found
+    if not poll:
+        stmt = select(Poll).where(Poll.slug == poll_id)
+        result = await db.execute(stmt)
+        poll = result.scalar_one_or_none()
+    
     if not poll:
         raise HTTPException(status_code=404, detail="Poll not found")
     
@@ -442,6 +470,12 @@ async def close_poll(
     
     result = await db.execute(stmt)
     poll = result.scalar_one_or_none()
+    
+    # Try as slug if not found
+    if not poll:
+        stmt = select(Poll).where(Poll.slug == poll_id)
+        result = await db.execute(stmt)
+        poll = result.scalar_one_or_none()
     
     if not poll:
         raise HTTPException(status_code=404, detail="Poll not found")
@@ -480,6 +514,12 @@ async def toggle_poll_status(
     result = await db.execute(stmt)
     poll = result.scalar_one_or_none()
     
+    # Try as slug if not found
+    if not poll:
+        stmt = select(Poll).where(Poll.slug == poll_id)
+        result = await db.execute(stmt)
+        poll = result.scalar_one_or_none()
+    
     if not poll:
         raise HTTPException(status_code=404, detail="Poll not found")
     
@@ -515,6 +555,12 @@ async def get_poll_statistics(
     
     result = await db.execute(stmt)
     poll = result.scalar_one_or_none()
+    
+    # Try as slug if not found
+    if not poll:
+        stmt = select(Poll).where(Poll.slug == poll_id)
+        result = await db.execute(stmt)
+        poll = result.scalar_one_or_none()
     
     if not poll:
         raise HTTPException(status_code=404, detail="Poll not found")
@@ -570,6 +616,12 @@ async def authenticate_admin(
     result = await db.execute(stmt)
     poll = result.scalar_one_or_none()
     
+    # Try as slug if not found
+    if not poll:
+        stmt = select(Poll).where(Poll.slug == poll_id)
+        result = await db.execute(stmt)
+        poll = result.scalar_one_or_none()
+    
     if not poll:
         raise HTTPException(status_code=404, detail="Poll not found")
     
@@ -614,6 +666,12 @@ async def export_poll_csv(
     
     result = await db.execute(stmt)
     poll = result.scalar_one_or_none()
+    
+    # Try as slug if not found
+    if not poll:
+        stmt = select(Poll).where(Poll.slug == poll_id)
+        result = await db.execute(stmt)
+        poll = result.scalar_one_or_none()
     
     if not poll:
         raise HTTPException(status_code=404, detail="Poll not found")
@@ -713,6 +771,12 @@ async def send_poll_invitations(
     
     result = await db.execute(stmt)
     poll = result.scalar_one_or_none()
+    
+    # Try as slug if not found
+    if not poll:
+        stmt = select(Poll).where(Poll.slug == poll_id)
+        result = await db.execute(stmt)
+        poll = result.scalar_one_or_none()
     
     if not poll:
         raise HTTPException(status_code=404, detail="Poll not found")

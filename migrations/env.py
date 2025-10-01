@@ -8,32 +8,14 @@ import sys
 from pathlib import Path
 from dotenv import load_dotenv
 
-from alembic import context
-from sqlalchemy import engine_from_config, pool
-import os
-
-# Your models
-from app.database import Base  # or wherever your Base is
-
-config = context.config
-
-# Override sqlalchemy.url with environment variable
-config.set_main_option(
-    'sqlalchemy.url',
-    os.environ.get('DATABASE_URL', '')
-)
-
-target_metadata = Base.metadata
-
-# ... rest of your env.py
 # Add parent directory to path so we can import app
 sys.path.append(str(Path(__file__).parent.parent))
 
-# Import your models
-from app.models import Base
-
 # Load environment variables
 load_dotenv()
+
+# Import your models (this is the correct import)
+from app.models import Base
 
 config = context.config
 
@@ -69,7 +51,7 @@ def run_migrations_offline() -> None:
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode."""
     configuration = config.get_section(config.config_ini_section)
-    configuration['sqlalchemy.url'] = database_url  # Add this line
+    configuration['sqlalchemy.url'] = database_url
     
     connectable = engine_from_config(
         configuration,
@@ -79,7 +61,8 @@ def run_migrations_online() -> None:
 
     with connectable.connect() as connection:
         context.configure(
-            connection=connection, target_metadata=target_metadata
+            connection=connection, 
+            target_metadata=target_metadata
         )
 
         with context.begin_transaction():

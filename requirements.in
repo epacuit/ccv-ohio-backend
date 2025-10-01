@@ -3,7 +3,6 @@ uvicorn[standard]
 pydantic
 pydantic-settings
 sqlalchemy
-psycopg2-binary==2.9.9
 asyncpg
 alembic
 greenlet

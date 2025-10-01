@@ -121,6 +121,12 @@ async def get_poll_voters(
     result = await db.execute(stmt)
     poll = result.scalar_one_or_none()
     
+    # Try as slug if still not found
+    if not poll:
+        stmt = select(Poll).where(Poll.slug == poll_id)
+        result = await db.execute(stmt)
+        poll = result.scalar_one_or_none()
+    
     if not poll:
         raise HTTPException(status_code=404, detail="Poll not found")
     
@@ -186,6 +192,12 @@ async def add_poll_voters(
     
     result = await db.execute(stmt)
     poll = result.scalar_one_or_none()
+    
+    # Try as slug if still not found
+    if not poll:
+        stmt = select(Poll).where(Poll.slug == poll_id)
+        result = await db.execute(stmt)
+        poll = result.scalar_one_or_none()
     
     if not poll:
         raise HTTPException(status_code=404, detail="Poll not found")
@@ -343,6 +355,12 @@ async def remove_poll_voter(
     result = await db.execute(stmt)
     poll = result.scalar_one_or_none()
     
+    # Try as slug if still not found
+    if not poll:
+        stmt = select(Poll).where(Poll.slug == poll_id)
+        result = await db.execute(stmt)
+        poll = result.scalar_one_or_none()
+    
     if not poll:
         raise HTTPException(status_code=404, detail="Poll not found")
     
@@ -404,6 +422,12 @@ async def regenerate_voter_token(
     
     result = await db.execute(stmt)
     poll = result.scalar_one_or_none()
+    
+    # Try as slug if still not found
+    if not poll:
+        stmt = select(Poll).where(Poll.slug == poll_id)
+        result = await db.execute(stmt)
+        poll = result.scalar_one_or_none()
     
     if not poll:
         raise HTTPException(status_code=404, detail="Poll not found")
@@ -471,6 +495,12 @@ async def send_poll_invitations(
     
     result = await db.execute(stmt)
     poll = result.scalar_one_or_none()
+    
+    # Try as slug if still not found
+    if not poll:
+        stmt = select(Poll).where(Poll.slug == poll_id)
+        result = await db.execute(stmt)
+        poll = result.scalar_one_or_none()
     
     if not poll:
         raise HTTPException(status_code=404, detail="Poll not found")
@@ -619,6 +649,12 @@ async def check_existing_ballot(
     result = await db.execute(stmt)
     poll = result.scalar_one_or_none()
     
+    # Try as slug if still not found
+    if not poll:
+        stmt = select(Poll).where(Poll.slug == poll_id)
+        result = await db.execute(stmt)
+        poll = result.scalar_one_or_none()
+    
     if not poll:
         raise HTTPException(status_code=404, detail="Poll not found")
     
@@ -658,4 +694,3 @@ async def check_existing_ballot(
             "has_voted": False,
             "ballot": None
         }
-
