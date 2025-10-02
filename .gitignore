@@ -32,8 +32,6 @@ htmlcov/
 # Database
 *.db
 *.sqlite3
-migrations/versions/*.py
-!migrations/versions/.gitkeep
 
 # Logs
 *.log
