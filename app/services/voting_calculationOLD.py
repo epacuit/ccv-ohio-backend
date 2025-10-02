@@ -76,7 +76,7 @@ def calculate_mwsl_with_explanation(
                 "note": "Beats every other candidate head-to-head",
                 "margins": margins
             },
-            "statistics": get_ballot_statistics_v2(profile, ballots, candidates),  # USE V2!
+            "statistics": get_ballot_statistics(profile, ballots, candidates),  # PASS CANDIDATES TOO!
             "detailed_pairwise_results": get_detailed_pairwise_results(profile, candidate_ids, candidate_names),
             "pairwise_matrix": get_pairwise_matrix(profile, candidate_ids, candidate_names),
             "copeland_scores": get_copeland_scores(profile, candidate_ids, candidate_names)
@@ -123,7 +123,7 @@ def calculate_mwsl_no_condorcet(
                     candidate_names[cid] for cid in most_wins_candidates
                 ]
             },
-            "statistics": get_ballot_statistics_v2(profile, ballots, candidates),  # USE V2!
+            "statistics": get_ballot_statistics(profile, ballots, candidates),  # PASS CANDIDATES!
             "detailed_pairwise_results": get_detailed_pairwise_results(profile, candidate_ids, candidate_names),
             "pairwise_matrix": get_pairwise_matrix(profile, candidate_ids, candidate_names),
             "copeland_scores": get_copeland_scores(profile, candidate_ids, candidate_names)
@@ -169,7 +169,7 @@ def calculate_mwsl_no_condorcet(
                     for idx in most_wins_indices
                 }
             },
-            "statistics": get_ballot_statistics_v2(profile, ballots, candidates),  # USE V2!
+            "statistics": get_ballot_statistics(profile, ballots, candidates),  # PASS CANDIDATES!
             "detailed_pairwise_results": get_detailed_pairwise_results(profile, candidate_ids, candidate_names),
             "pairwise_matrix": get_pairwise_matrix(profile, candidate_ids, candidate_names),
             "copeland_scores": get_copeland_scores(profile, candidate_ids, candidate_names)
@@ -198,7 +198,7 @@ def calculate_mwsl_no_condorcet(
                 for idx in winners_indices
             }
         },
-        "statistics": get_ballot_statistics_v2(profile, ballots, candidates),  # USE V2!
+        "statistics": get_ballot_statistics(profile, ballots, candidates),  # PASS CANDIDATES!
         "detailed_pairwise_results": get_detailed_pairwise_results(profile, candidate_ids, candidate_names),
         "pairwise_matrix": get_pairwise_matrix(profile, candidate_ids, candidate_names),
         "copeland_scores": get_copeland_scores(profile, candidate_ids, candidate_names)
@@ -248,13 +248,12 @@ def get_detailed_pairwise_results(
     
     return detailed_results
 
-# ORIGINAL FUNCTION - KEPT FOR BACKWARDS COMPATIBILITY
 def get_ballot_statistics(
     profile: PairwiseProfile, 
     original_ballots: List[Any] = None,
     candidates: List[Dict[str, Any]] = None  # ADD CANDIDATES PARAMETER
 ) -> Dict[str, Any]:
-    """Get ballot statistics from profile including skipped ranks and all candidates ranked - ORIGINAL VERSION"""
+    """Get ballot statistics from profile including skipped ranks and all candidates ranked"""
     
     total_votes = profile.num_voters
     
@@ -341,84 +340,6 @@ def get_ballot_statistics(
         "has_skipped_ranks": has_skipped_ranks,
         "all_candidates_ranked": all_candidates_ranked  # NEW STATISTIC
     }
-
-# NEW FUNCTION WITH CLEANER STATISTICS
-def get_ballot_statistics_v2(
-    profile: PairwiseProfile, 
-    original_ballots: List[Any] = None,
-    candidates: List[Dict[str, Any]] = None
-) -> Dict[str, Any]:
-    """
-    Get ballot statistics with user-friendly terminology:
-    - ranked_almost_all: % who ranked all candidates (except possibly 1)
-    - partial_ranking: % who left at least 2 candidates unranked  
-    - had_gaps: % with skipped ranks
-    - single_choice_only: % bullet votes (ranked only first choice)
-    """
-    
-    total_votes = profile.num_voters
-    
-    # Initialize counters
-    ranked_almost_all = 0
-    partial_ranking = 0
-    had_gaps = 0
-    single_choice_only = 0
-    
-    if original_ballots and candidates:
-        from .ballot_process_rules import has_skipped_rank as check_skipped_ranks
-        
-        # Get the base candidate IDs from the poll
-        base_candidate_ids = {c['id'] for c in candidates}
-        
-        for ballot in original_ballots:
-            if ballot.rankings:
-                # Convert to dict format
-                ranking_dict = {item['candidate_id']: item['rank'] for item in ballot.rankings}
-                num_ranked = len(ranking_dict)
-                
-                # Get total candidates for this ballot (including any write-ins it added)
-                ballot_write_in_ids = set()
-                if hasattr(ballot, 'write_ins') and ballot.write_ins:
-                    for write_in in ballot.write_ins:
-                        if isinstance(write_in, dict) and 'id' in write_in:
-                            ballot_write_in_ids.add(write_in['id'])
-                
-                # Total candidates available for this ballot
-                total_candidates_for_ballot = len(base_candidate_ids | ballot_write_in_ids)
-                
-                # 1. Ranked (almost) all candidates - all except possibly 1
-                if num_ranked >= (total_candidates_for_ballot - 1):
-                    ranked_almost_all += ballot.count
-                
-                # 2. Partial ranking - left at least 2 candidates unranked
-                if num_ranked <= (total_candidates_for_ballot - 2):
-                    partial_ranking += ballot.count
-                
-                # 3. Has gaps?
-                if ranking_dict and check_skipped_ranks(ranking_dict):
-                    had_gaps += ballot.count
-                
-                # 4. Single choice only (bullet vote)?
-                if num_ranked == 1:
-                    single_choice_only += ballot.count
-    
-    # Convert to percentages
-    if total_votes > 0:
-        return {
-            "total_votes": total_votes,
-            "ranked_almost_all": round((ranked_almost_all / total_votes) * 100, 1),
-            "partial_ranking": round((partial_ranking / total_votes) * 100, 1),
-            "had_gaps": round((had_gaps / total_votes) * 100, 1),
-            "single_choice_only": round((single_choice_only / total_votes) * 100, 1)
-        }
-    else:
-        return {
-            "total_votes": 0,
-            "ranked_almost_all": 0,
-            "partial_ranking": 0,
-            "had_gaps": 0,
-            "single_choice_only": 0
-        }
 
 def get_pairwise_matrix(
     profile: PairwiseProfile,  # FIXED TYPE HINT

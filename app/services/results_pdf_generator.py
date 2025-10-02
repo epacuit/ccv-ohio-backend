@@ -156,6 +156,52 @@ def create_head_to_head_bar_chart(cand1_name, cand2_name, cand1_votes, cand2_vot
     
     return drawing
 
+def create_ballot_statistics_visual(stats):
+    """Create visual representation of ballot statistics."""
+    from reportlab.graphics.shapes import Drawing, Rect, String
+    from reportlab.lib import colors
+    
+    width = 6*inch
+    height = 2.5*inch  # Reduced height
+    drawing = Drawing(width, height)
+    
+    # Statistics to display - MUST match field names from backend!
+    stat_items = [
+        ("Ranked (almost) all candidates", stats.get('ranked_almost_all', 0), colors.HexColor('#4CAF50')),
+        ("Submitted a partial ranking", stats.get('partial_ranking', 0), colors.HexColor('#2196F3')),
+        ("Ballots had gaps", stats.get('had_gaps', 0), colors.HexColor('#FF9800')),
+        ("Bullet vote", stats.get('single_choice_only', 0), colors.HexColor('#9E9E9E'))
+    ]
+    
+    # Layout parameters - FIXED positioning
+    bar_width = width * 0.45  # Narrower bars
+    bar_height = 15  # Thinner bars
+    y_spacing = 35  # Less spacing
+    left_margin = width * 0.42  # Move bars right to give text more room
+    
+    for i, (label, value, color) in enumerate(stat_items):
+        y_pos = height - ((i + 1) * y_spacing) + 10  # Adjust vertical position
+        
+        # Label (left side - more room)
+        drawing.add(String(5, y_pos + 3, label, 
+                         fontSize=9, fontName=get_font_name('normal')))
+        
+        # Background bar
+        drawing.add(Rect(left_margin, y_pos, bar_width, bar_height,
+                        fillColor=colors.HexColor('#E0E0E0'), strokeColor=None))
+        
+        # Value bar
+        if value > 0:
+            value_width = (value / 100) * bar_width
+            drawing.add(Rect(left_margin, y_pos, value_width, bar_height,
+                           fillColor=color, strokeColor=None))
+        
+        # Percentage label (right of bar)
+        drawing.add(String(left_margin + bar_width + 10, y_pos + 3, f"{value}%",
+                         fontSize=9, fontName=get_font_name('normal', use_bold=True)))
+    
+    return drawing
+
 def generate_results_pdf(poll: Dict, results: Dict) -> bytes:
     """
     Generate a professional PDF of poll results including winner, head-to-head comparisons, and details.
@@ -282,11 +328,11 @@ def generate_results_pdf(poll: Dict, results: Dict) -> bytes:
         except Exception as e:
             print(f"QR code generation failed: {e}")
     
-    # Create poll info data
+    # Create poll info data - Include total voters
     poll_info_basic = [
         ["Poll Title:", poll.get('title', 'Untitled Poll')],
         ["Poll ID:", poll.get('short_id', 'N/A')],
-        ["Total Votes:", f"{results.get('statistics', {}).get('total_votes', 0):,}"],
+        ["Total Voters:", f"{results.get('statistics', {}).get('total_votes', 0):,}"],  # Keep total voters
         ["Generated:", datetime.now().strftime('%B %d, %Y at %I:%M %p')],
         ["Results URL:", results_url]
     ]
@@ -316,10 +362,9 @@ def generate_results_pdf(poll: Dict, results: Dict) -> bytes:
     else:
         story.append(poll_info_table)
     
-    # Add description separately below the QR code section (so it won't be cut off)
+    # Add description separately below the QR code section
     if poll.get('description'):
         story.append(Spacer(1, 10))
-        # Use a wrapping paragraph that spans the full width
         desc_para = Paragraph(f"<b>Description:</b> {poll['description']}", normal_style)
         story.append(desc_para)
     
@@ -368,316 +413,99 @@ def generate_results_pdf(poll: Dict, results: Dict) -> bytes:
     story.append(winner_table)
     story.append(Spacer(1, 25))
     
+    # Ballot Statistics - matching online display exactly
+    if results.get('statistics'):
+        story.append(Paragraph("Ballot Statistics", heading_style))
+        
+        stats = results['statistics']
+        
+        # Add Total Voters prominently
+        total_voters_data = [
+            ["Total Voters:", f"{stats.get('total_votes', 0):,}"]
+        ]
+        total_voters_table = Table(total_voters_data, colWidths=[1.5*inch, 2*inch])
+        total_voters_table.setStyle(TableStyle([
+            ('FONTNAME', (0, 0), (0, 0), get_font_name('normal', use_bold=True)),
+            ('FONTNAME', (1, 0), (1, 0), get_font_name('normal', use_bold=True)),
+            ('FONTSIZE', (0, 0), (-1, -1), 12),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
+        ]))
+        story.append(total_voters_table)
+        story.append(Spacer(1, 15))
+        
+        # Voting Patterns heading
+        story.append(Paragraph("VOTING PATTERNS", 
+                              ParagraphStyle('PatternTitle', parent=normal_style, 
+                                           fontSize=9, textColor=colors.HexColor('#666666'))))
+        story.append(Spacer(1, 10))
+        
+        # Statistics table with percentages - matching the exact field names!
+        stats_data = []
+        
+        # Ranked (almost) all candidates
+        if 'ranked_almost_all' in stats:
+            stats_data.append([
+                "Ranked (almost) all candidates",
+                f"{stats['ranked_almost_all']}%",
+                "All except possibly 1 candidate"
+            ])
+        
+        # Submitted a partial ranking
+        if 'partial_ranking' in stats:
+            stats_data.append([
+                "Submitted a partial ranking",
+                f"{stats['partial_ranking']}%",
+                "Left at least 2 candidates unranked"
+            ])
+        
+        # Ballots had gaps
+        if 'had_gaps' in stats:
+            stats_data.append([
+                "Ballots had gaps",
+                f"{stats['had_gaps']}%",
+                "Skipped ranks in sequence"
+            ])
+        
+        # Bullet vote
+        if 'single_choice_only' in stats:
+            stats_data.append([
+                "Bullet vote",
+                f"{stats['single_choice_only']}%",
+                "Ranked only first choice"
+            ])
+        
+        if stats_data:
+            stats_table = Table(stats_data, colWidths=[2.2*inch, 0.8*inch, 2.5*inch])
+            stats_table.setStyle(TableStyle([
+                ('FONTNAME', (0, 0), (0, -1), get_font_name('normal', use_bold=True)),
+                ('FONTNAME', (1, 0), (1, -1), get_font_name('normal', use_bold=True)),
+                ('FONTNAME', (2, 0), (2, -1), get_font_name('normal')),
+                ('FONTSIZE', (0, 0), (-1, -1), 10),
+                ('ALIGN', (1, 0), (1, -1), 'CENTER'),
+                ('TEXTCOLOR', (1, 0), (1, -1), colors.HexColor('#2196F3')),
+                ('TEXTCOLOR', (2, 0), (2, -1), colors.HexColor('#666666')),
+                ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#F9F9F9')),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#E0E0E0')),
+                ('TOPPADDING', (0, 0), (-1, -1), 8),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+                ('LEFTPADDING', (0, 0), (-1, -1), 10),
+            ]))
+            story.append(stats_table)
+        
+        story.append(Spacer(1, 10))
+        
+        # Note about overlapping
+        story.append(Paragraph(
+            "<i>Note: Categories can overlap (e.g., a ballot can be both partial and have gaps)</i>",
+            ParagraphStyle('Note', parent=normal_style, fontSize=8, 
+                         textColor=colors.HexColor('#666666'), alignment=TA_CENTER)
+        ))
+    
+    story.append(Spacer(1, 25))
+    
     # Get pairwise matrix and detailed results for later use
     pairwise_matrix = results.get('pairwise_matrix', {})
     detailed_results = results.get('detailed_pairwise_results', {})
-    
-    # Additional Details Section (matching PollResults.jsx exactly)
-    if winner_type in ['condorcet', 'most_wins', 'smallest_loss']:
-        story.append(Paragraph("Additional Details", heading_style))
-        
-        # CONDORCET WINNER
-        if winner_type == 'condorcet' and winner:
-            # Statement
-            statement = f"{winner} is the only candidate that wins all of their head-to-head matchups."
-            story.append(Paragraph(statement, normal_style))
-            story.append(Spacer(1, 10))
-            
-            # Wins box
-            wins_title = Paragraph(f"<b>{winner.upper()}'S WINS</b>", 
-                                 ParagraphStyle('WinsTitle', parent=bold_style, 
-                                              textColor=colors.HexColor('#4CAF50')))
-            
-            # Get wins from pairwise matrix
-            wins_data = []
-            if pairwise_matrix and winner in pairwise_matrix:
-                for opponent, margin in pairwise_matrix[winner].items():
-                    if margin > 0:
-                        wins_data.append([f"• Beats {opponent} by {margin:,} votes"])
-            
-            wins_table_data = [[wins_title]] + [[Paragraph(w[0], normal_style)] for w in wins_data]
-            
-            wins_table = Table(wins_table_data, colWidths=[6*inch])
-            wins_table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#F5F5F5')),
-                ('BOX', (0, 0), (-1, -1), 1, colors.HexColor('#E0E0E0')),
-                ('TOPPADDING', (0, 0), (-1, -1), 8),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
-                ('LEFTPADDING', (0, 0), (-1, -1), 12),
-            ]))
-            story.append(wins_table)
-        
-        # MOST WINS
-        elif winner_type == 'most_wins' and winner:
-            # Statement
-            statement = f"No candidate beats all others head-to-head. {winner} has the highest score based on head-to-head matchups."
-            story.append(Paragraph(statement, normal_style))
-            story.append(Spacer(1, 10))
-            
-            # Scoring explanation box
-            scoring_title = Paragraph("<b>HOW THE SCORING WORKS</b>", 
-                                    ParagraphStyle('ScoringTitle', parent=bold_style, fontSize=9))
-            scoring_text = Paragraph(
-                "Each candidate gets points based on their head-to-head matchups:<br/>"
-                "• Each win earns 1 point<br/>"
-                "• Each tie earns 0.5 points<br/>"
-                "• Each loss earns 0 points",
-                ParagraphStyle('ScoringText', parent=normal_style, fontSize=9)
-            )
-            
-            scoring_table = Table([[scoring_title], [scoring_text]], colWidths=[6*inch])
-            scoring_table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#F5F5F5')),
-                ('BOX', (0, 0), (-1, -1), 1, colors.HexColor('#E0E0E0')),
-                ('TOPPADDING', (0, 0), (-1, -1), 8),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
-                ('LEFTPADDING', (0, 0), (-1, -1), 12),
-            ]))
-            story.append(scoring_table)
-            story.append(Spacer(1, 15))
-            
-            # Final Scores
-            story.append(Paragraph("<b>FINAL SCORES</b>", 
-                                 ParagraphStyle('ScoresTitle', parent=bold_style, fontSize=9)))
-            story.append(Spacer(1, 10))
-            
-            # Calculate and display scores
-            if results.get('explanation') and results['explanation'].get('copeland_scores'):
-                scores = results['explanation']['copeland_scores']
-                sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-                
-                # Calculate wins/ties for each candidate
-                for candidate_name, score in sorted_scores:
-                    is_winner = candidate_name == winner
-                    wins = losses = ties = 0
-                    
-                    if candidate_name in pairwise_matrix:
-                        for opponent, margin in pairwise_matrix[candidate_name].items():
-                            if margin > 0: wins += 1
-                            elif margin < 0: losses += 1
-                            else: ties += 1
-                    
-                    # Format calculation string
-                    calc_parts = []
-                    if wins > 0:
-                        calc_parts.append(f"{wins} {'win' if wins == 1 else 'wins'}")
-                    if ties > 0:
-                        calc_parts.append(f"{ties} {'tie' if ties == 1 else 'ties'} × 0.5")
-                    if not calc_parts:
-                        calc_parts.append("0 wins")
-                    calculation = f"<i>{' + '.join(calc_parts)} = {score} {'point' if score == 1 else 'points'}</i>"
-                    
-                    # Create the score display
-                    if is_winner:
-                        name_para = Paragraph(f"<b>{candidate_name}</b>", 
-                                            ParagraphStyle('WinnerName', parent=bold_style, 
-                                                         textColor=colors.HexColor('#2196F3')))
-                        score_para = Paragraph(f"<b>{score} {'point' if score == 1 else 'points'}</b>", 
-                                             ParagraphStyle('WinnerScore', parent=bold_style, 
-                                                          textColor=colors.HexColor('#2196F3')))
-                    else:
-                        name_para = Paragraph(candidate_name, normal_style)
-                        score_para = Paragraph(f"{score} {'point' if score == 1 else 'points'}", normal_style)
-                    
-                    calc_para = Paragraph(calculation, 
-                                        ParagraphStyle('Calc', parent=normal_style, fontSize=8, 
-                                                     textColor=colors.HexColor('#666666')))
-                    
-                    score_table = Table([[name_para], [score_para], [calc_para]], colWidths=[6*inch])
-                    
-                    if is_winner:
-                        score_table.setStyle(TableStyle([
-                            ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#E3F2FD')),
-                            ('BOX', (0, 0), (-1, -1), 1, colors.HexColor('#90CAF9')),
-                            ('TOPPADDING', (0, 0), (-1, -1), 6),
-                            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-                            ('LEFTPADDING', (0, 0), (-1, -1), 12),
-                        ]))
-                    else:
-                        score_table.setStyle(TableStyle([
-                            ('TOPPADDING', (0, 0), (-1, -1), 4),
-                            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-                            ('LEFTPADDING', (0, 0), (-1, -1), 12),
-                        ]))
-                    
-                    story.append(score_table)
-                    story.append(Spacer(1, 8))
-        
-        # SMALLEST LOSS
-        elif winner_type == 'smallest_loss' and winner:
-            # Get tied candidates
-            tied_candidates = []
-            if results.get('explanation') and results['explanation'].get('candidates_with_most_wins'):
-                tied_candidates = results['explanation']['candidates_with_most_wins']
-            
-            # Statement about tie
-            if len(tied_candidates) == 2:
-                statement = f"{tied_candidates[0]} and {tied_candidates[1]} are tied for the most wins."
-            elif len(tied_candidates) > 2:
-                statement = f"{', '.join(tied_candidates[:-1])}, and {tied_candidates[-1]} are tied for the most wins."
-            else:
-                statement = f"{winner} has the most wins."
-            
-            story.append(Paragraph(statement, normal_style))
-            story.append(Spacer(1, 10))
-            
-            # Scoring explanation (same as most_wins)
-            scoring_title = Paragraph("<b>HOW THE SCORING WORKS</b>", 
-                                    ParagraphStyle('ScoringTitle', parent=bold_style, fontSize=9))
-            scoring_text = Paragraph(
-                "Each candidate gets points based on their head-to-head matchups:<br/>"
-                "• Each win earns 1 point<br/>"
-                "• Each tie earns 0.5 points<br/>"
-                "• Each loss earns 0 points",
-                ParagraphStyle('ScoringText', parent=normal_style, fontSize=9)
-            )
-            
-            scoring_table = Table([[scoring_title], [scoring_text]], colWidths=[6*inch])
-            scoring_table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#F5F5F5')),
-                ('BOX', (0, 0), (-1, -1), 1, colors.HexColor('#E0E0E0')),
-                ('TOPPADDING', (0, 0), (-1, -1), 8),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
-                ('LEFTPADDING', (0, 0), (-1, -1), 12),
-            ]))
-            story.append(scoring_table)
-            story.append(Spacer(1, 15))
-            
-            # Final Scores (highlighting tied candidates)
-            story.append(Paragraph("<b>FINAL SCORES</b>", 
-                                 ParagraphStyle('ScoresTitle', parent=bold_style, fontSize=9)))
-            story.append(Spacer(1, 10))
-            
-            if results.get('explanation') and results['explanation'].get('copeland_scores'):
-                scores = results['explanation']['copeland_scores']
-                sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-                
-                for candidate_name, score in sorted_scores:
-                    is_winner = candidate_name == winner
-                    is_tied = candidate_name in tied_candidates
-                    wins = losses = ties = 0
-                    
-                    if candidate_name in pairwise_matrix:
-                        for opponent, margin in pairwise_matrix[candidate_name].items():
-                            if margin > 0: wins += 1
-                            elif margin < 0: losses += 1
-                            else: ties += 1
-                    
-                    # Format calculation
-                    calc_parts = []
-                    if wins > 0:
-                        calc_parts.append(f"{wins} {'win' if wins == 1 else 'wins'}")
-                    if ties > 0:
-                        calc_parts.append(f"{ties} {'tie' if ties == 1 else 'ties'} × 0.5")
-                    if not calc_parts:
-                        calc_parts.append("0 wins")
-                    calculation = f"<i>{' + '.join(calc_parts)} = {score} {'point' if score == 1 else 'points'}</i>"
-                    
-                    # Style based on status
-                    if is_winner:
-                        name_para = Paragraph(f"<b>{candidate_name}</b>", 
-                                            ParagraphStyle('WinnerName', parent=bold_style, 
-                                                         textColor=colors.HexColor('#FF9800')))
-                        score_para = Paragraph(f"<b>{score} {'point' if score == 1 else 'points'}</b>", 
-                                             ParagraphStyle('WinnerScore', parent=bold_style, 
-                                                          textColor=colors.HexColor('#FF9800')))
-                    elif is_tied:
-                        name_para = Paragraph(f"<b>{candidate_name}</b>", 
-                                            ParagraphStyle('TiedName', parent=bold_style, 
-                                                         textColor=colors.HexColor('#FF9800')))
-                        score_para = Paragraph(f"<b>{score} {'point' if score == 1 else 'points'}</b>", 
-                                             ParagraphStyle('TiedScore', parent=bold_style, 
-                                                          textColor=colors.HexColor('#FF9800')))
-                    else:
-                        name_para = Paragraph(candidate_name, normal_style)
-                        score_para = Paragraph(f"{score} {'point' if score == 1 else 'points'}", normal_style)
-                    
-                    calc_para = Paragraph(calculation, 
-                                        ParagraphStyle('Calc', parent=normal_style, fontSize=8, 
-                                                     textColor=colors.HexColor('#666666')))
-                    
-                    score_table = Table([[name_para], [score_para], [calc_para]], colWidths=[6*inch])
-                    
-                    if is_winner or is_tied:
-                        score_table.setStyle(TableStyle([
-                            ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#FFF3E0')),
-                            ('BOX', (0, 0), (-1, -1), 1, colors.HexColor('#FFCC80')),
-                            ('TOPPADDING', (0, 0), (-1, -1), 6),
-                            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-                            ('LEFTPADDING', (0, 0), (-1, -1), 12),
-                        ]))
-                    else:
-                        score_table.setStyle(TableStyle([
-                            ('TOPPADDING', (0, 0), (-1, -1), 4),
-                            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-                            ('LEFTPADDING', (0, 0), (-1, -1), 12),
-                        ]))
-                    
-                    story.append(score_table)
-                    story.append(Spacer(1, 8))
-            
-            # Statement about smallest loss
-            story.append(Paragraph(f"Among {', '.join(tied_candidates)}, {winner} has the smallest loss.", normal_style))
-            story.append(Spacer(1, 15))
-            
-            # Loss Comparisons
-            story.append(Paragraph("<b>LOSS COMPARISONS</b>", 
-                                 ParagraphStyle('LossTitle', parent=bold_style, fontSize=9)))
-            story.append(Spacer(1, 10))
-            
-            # Show losses for each tied candidate
-            for candidate_name in tied_candidates:
-                is_winner = candidate_name == winner
-                
-                # Get losses for this candidate
-                losses = []
-                if candidate_name in pairwise_matrix:
-                    for opponent, margin in pairwise_matrix[candidate_name].items():
-                        if margin < 0:
-                            losses.append((opponent, abs(margin)))
-                losses.sort(key=lambda x: x[1])  # Sort by margin (smallest first)
-                
-                # Create loss display
-                if is_winner:
-                    loss_title = Paragraph(f"<b>{candidate_name.upper()}'S LOSSES (SMALLEST TO LARGEST)</b>",
-                                         ParagraphStyle('LossTitle', parent=bold_style, fontSize=9,
-                                                      textColor=colors.HexColor('#FF9800')))
-                else:
-                    loss_title = Paragraph(f"<b>{candidate_name.upper()}'S LOSSES (SMALLEST TO LARGEST)</b>",
-                                         ParagraphStyle('LossTitle', parent=bold_style, fontSize=9,
-                                                      textColor=colors.HexColor('#F44336')))
-                
-                loss_data = [[loss_title]]
-                if losses:
-                    for opponent, margin in losses:
-                        loss_text = f"• Loses to {opponent} by {margin:,} {'vote' if margin == 1 else 'votes'}"
-                        loss_data.append([Paragraph(loss_text, normal_style)])
-                else:
-                    loss_data.append([Paragraph("No losses", normal_style)])
-                
-                loss_table = Table(loss_data, colWidths=[6*inch])
-                
-                if is_winner:
-                    loss_table.setStyle(TableStyle([
-                        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#FFF3E0')),
-                        ('BOX', (0, 0), (-1, -1), 1, colors.HexColor('#FFCC80')),
-                        ('TOPPADDING', (0, 0), (-1, -1), 8),
-                        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
-                        ('LEFTPADDING', (0, 0), (-1, -1), 12),
-                    ]))
-                else:
-                    loss_table.setStyle(TableStyle([
-                        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#F5F5F5')),
-                        ('BOX', (0, 0), (-1, -1), 1, colors.HexColor('#E0E0E0')),
-                        ('TOPPADDING', (0, 0), (-1, -1), 8),
-                        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
-                        ('LEFTPADDING', (0, 0), (-1, -1), 12),
-                    ]))
-                
-                story.append(loss_table)
-                story.append(Spacer(1, 10))
-    
-    story.append(Spacer(1, 20))
     
     # Head-to-Head Comparisons with Visual Bar Charts
     story.append(Paragraph("Head-to-Head Comparisons", heading_style))
@@ -791,44 +619,6 @@ def generate_results_pdf(poll: Dict, results: Dict) -> bytes:
         
         story.append(standings_table)
     
-    story.append(Spacer(1, 25))
-    
-    # Ballot Statistics
-    if results.get('statistics'):
-        story.append(Paragraph("Ballot Statistics", heading_style))
-        
-        stats = results['statistics']
-        
-        stats_data = []
-        
-        if 'linear_orders' in stats:
-            pct = round((stats['linear_orders'] / stats['total_votes']) * 100)
-            stats_data.append(['Linear orders:', f"{stats['linear_orders']:,} ({pct}%)"])
-        
-        if 'all_candidates_ranked' in stats:
-            pct = round((stats['all_candidates_ranked'] / stats['total_votes']) * 100)
-            stats_data.append(['All candidates ranked:', f"{stats['all_candidates_ranked']:,} ({pct}%)"])
-        
-        if 'bullet_votes' in stats:
-            pct = round((stats['bullet_votes'] / stats['total_votes']) * 100)
-            stats_data.append(['Bullet votes:', f"{stats['bullet_votes']:,} ({pct}%)"])
-        
-        if 'has_skipped_ranks' in stats:
-            pct = round((stats['has_skipped_ranks'] / stats['total_votes']) * 100)
-            stats_data.append(['Skipped ranks:', f"{stats['has_skipped_ranks']:,} ({pct}%)"])
-        
-        if stats_data:
-            stats_table = Table(stats_data, colWidths=[2.5*inch, 2*inch])
-            stats_table.setStyle(TableStyle([
-                ('ALIGN', (0, 0), (0, -1), 'LEFT'),
-                ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
-                ('FONTNAME', (0, 0), (0, -1), get_font_name('normal', use_bold=True)),
-                ('FONTNAME', (1, 0), (1, -1), get_font_name('normal')),
-                ('FONTSIZE', (0, 0), (-1, -1), 10),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
-            ]))
-            story.append(stats_table)
-    
     # Footer
     story.append(Spacer(1, 40))
     
@@ -861,5 +651,3 @@ def generate_results_pdf(poll: Dict, results: Dict) -> bytes:
     buffer.close()
     
     return pdf_content
-
-
