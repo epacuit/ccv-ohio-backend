@@ -51,22 +51,23 @@ async def calculate_and_store_results(
         lock_acquired = lock_result.scalar()
         
         if not lock_acquired:
-            # Another request is calculating - wait a bit and return cached result
-            await asyncio.sleep(0.5)
+            # Another request is calculating - poll for result
+            for _ in range(20):  # Try 20 times
+                await asyncio.sleep(0.3)  # Wait 0.3 seconds each time
+                
+                # Check if result is ready
+                stmt = select(Result).where(
+                    Result.poll_id == poll.id,
+                    Result.is_current == True
+                ).order_by(Result.computed_at.desc()).limit(1)
+                
+                result = await db.execute(stmt)
+                cached_result = result.scalars().first()
+                
+                if cached_result:
+                    return cached_result.data
             
-            # Get the cached result (should exist after other request finishes)
-            stmt = select(Result).where(
-                Result.poll_id == poll.id,
-                Result.is_current == True
-            ).order_by(Result.computed_at.desc()).limit(1)
-            
-            result = await db.execute(stmt)
-            cached_result = result.scalars().first()
-            
-            if cached_result:
-                return cached_result.data
-            
-            # If still no result, try acquiring lock again
+            # After 3 seconds (10 * 0.3), try one more time to get lock
             lock_result = await db.execute(lock_stmt, {"lock_key": lock_key})
             lock_acquired = lock_result.scalar()
             
@@ -74,8 +75,7 @@ async def calculate_and_store_results(
                 raise HTTPException(
                     status_code=503,
                     detail="Results are being calculated. Please retry in a few seconds."
-                )
-        
+                )        
         # Lock acquired - we're the one calculating
         
         # Check for existing cached results - handle duplicates gracefully

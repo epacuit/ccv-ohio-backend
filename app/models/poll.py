@@ -20,6 +20,7 @@ class Poll(Base):
     
     # Poll type and status
     is_private = Column(Boolean, default=False, nullable=False)
+    is_test = Column(Boolean, default=False, nullable=False)  
     status = Column(String(20), default='open', nullable=False)
     closing_at = Column(TIMESTAMP(timezone=True), nullable=True)
     
