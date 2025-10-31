@@ -5,6 +5,7 @@ from typing import Any, Dict, List
 import os
 import math
 import pytz
+import re
 
 try:
     from reportlab.lib import colors
@@ -30,6 +31,34 @@ try:
     QRCODE_AVAILABLE = True
 except ImportError:
     QRCODE_AVAILABLE = False
+
+def convert_markdown_to_reportlab_html(markdown_text: str) -> str:
+    """
+    Convert markdown to ReportLab-compatible HTML.
+    ReportLab Paragraph supports: b, i, u, a href, br, font
+    """
+    if not markdown_text:
+        return ""
+    
+    html = markdown_text
+    
+    # Convert **bold** to <b>bold</b>
+    html = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', html)
+    html = re.sub(r'__(.+?)__', r'<b>\1</b>', html)
+    
+    # Convert *italic* to <i>italic</i>
+    html = re.sub(r'\*(.+?)\*', r'<i>\1</i>', html)
+    html = re.sub(r'_(.+?)_', r'<i>\1</i>', html)
+    
+    # Convert [text](url) to <a href="url">text</a>
+    html = re.sub(r'\[([^\]]+)\]\(([^\)]+)\)', r'<a href="\2" color="blue">\1</a>', html)
+    
+    # Convert line breaks
+    html = html.replace('\n', '<br/>')
+    
+    # Escape any remaining special characters that might break ReportLab
+    # But preserve our HTML tags
+    return html
 
 def register_custom_fonts():
     """Register Montserrat and Gloock fonts for the PDF."""
@@ -329,16 +358,20 @@ def generate_results_pdf(poll: Dict, results: Dict) -> bytes:
             print(f"QR code generation failed: {e}")
     
     # Create poll info data - Include total voters
+    # Wrap title and URL in Paragraph to allow wrapping
+    title_para = Paragraph(poll.get('title', 'Untitled Poll'), normal_style)
+    url_para = Paragraph(results_url, normal_style)
+    
     poll_info_basic = [
-        ["Poll Title:", poll.get('title', 'Untitled Poll')],
+        ["Poll Title:", title_para],
         ["Poll ID:", poll.get('short_id', 'N/A')],
         ["Total Voters:", f"{results.get('statistics', {}).get('total_votes', 0):,}"],  # Keep total voters
         ["Generated:", datetime.now().strftime('%B %d, %Y at %I:%M %p')],
-        ["Results URL:", results_url]
+        ["Results URL:", url_para]
     ]
     
     # Create the basic info table
-    poll_info_table = Table(poll_info_basic, colWidths=[1.5*inch, 4*inch])
+    poll_info_table = Table(poll_info_basic, colWidths=[1.5*inch, 3.8*inch])
     poll_info_table.setStyle(TableStyle([
         ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
         ('VALIGN', (0, 0), (-1, -1), 'TOP'),
@@ -365,7 +398,9 @@ def generate_results_pdf(poll: Dict, results: Dict) -> bytes:
     # Add description separately below the QR code section
     if poll.get('description'):
         story.append(Spacer(1, 10))
-        desc_para = Paragraph(f"<b>Description:</b> {poll['description']}", normal_style)
+        # Convert markdown to HTML for ReportLab
+        desc_html = convert_markdown_to_reportlab_html(poll['description'])
+        desc_para = Paragraph(f"<b>Description:</b> {desc_html}", normal_style)
         story.append(desc_para)
     
     story.append(Spacer(1, 25))
@@ -411,9 +446,126 @@ def generate_results_pdf(poll: Dict, results: Dict) -> bytes:
     ]))
     
     story.append(winner_table)
+    story.append(Spacer(1, 20))
+    
+    # Get pairwise matrix and detailed results for later use
+    pairwise_matrix = results.get('pairwise_matrix', {})
+    detailed_results = results.get('detailed_pairwise_results', {})
+    
+    # STANDINGS TABLE (no heading, right after winner)
+    if pairwise_matrix:
+        candidates = list(pairwise_matrix.keys())
+        
+        # Calculate wins, losses, ties for each candidate
+        candidate_stats = {}
+        for candidate in candidates:
+            wins = 0
+            losses = 0
+            ties = 0
+            for opponent in candidates:
+                if opponent != candidate:
+                    margin = pairwise_matrix.get(candidate, {}).get(opponent, 0)
+                    if margin > 0:
+                        wins += 1
+                    elif margin < 0:
+                        losses += 1
+                    else:
+                        ties += 1
+            candidate_stats[candidate] = {'wins': wins, 'losses': losses, 'ties': ties}
+        
+        # Create standings table
+        standings_data = [['Candidate', 'Wins', 'Losses', 'Ties']]
+        
+        sorted_candidates = sorted(candidates, 
+                                  key=lambda c: (candidate_stats[c]['wins'], -candidate_stats[c]['losses']), 
+                                  reverse=True)
+        
+        for candidate in sorted_candidates:
+            stats = candidate_stats[candidate]
+            is_winner = (winner and candidate == winner) or (candidate in winners)
+            row = [
+                candidate if not is_winner else f"{candidate} ★",
+                str(stats['wins']),
+                str(stats['losses']),
+                str(stats['ties'])
+            ]
+            standings_data.append(row)
+        
+        standings_table = Table(standings_data, colWidths=[3*inch, 1*inch, 1*inch, 1*inch])
+        standings_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), get_font_name('normal', use_bold=True)),
+            ('FONTNAME', (0, 1), (0, -1), get_font_name('normal')),
+            ('FONTNAME', (1, 1), (-1, -1), get_font_name('normal')),
+            ('FONTSIZE', (0, 0), (-1, -1), 10),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.lightgrey]),
+            ('TOPPADDING', (0, 0), (-1, -1), 8),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+        ]))
+        
+        story.append(standings_table)
+    
     story.append(Spacer(1, 25))
     
-    # Ballot Statistics - matching online display exactly
+    # HEAD-TO-HEAD COMPARISONS with Visual Bar Charts
+    story.append(Paragraph("Head-to-Head Comparisons", heading_style))
+    
+    if detailed_results:
+        # Sort comparisons for consistent ordering
+        comparisons = sorted(detailed_results.keys())
+        
+        # Create a table with bar charts for each comparison
+        comparison_data = []
+        
+        for comparison_key in comparisons:
+            comp_data = detailed_results[comparison_key]
+            
+            # Extract candidate names from the comparison key
+            parts = comparison_key.replace('_vs_', ' vs ').split(' vs ')
+            if len(parts) == 2:
+                cand1_name = parts[0]
+                cand2_name = parts[1]
+                
+                # Get vote counts
+                cand1_votes = comp_data.get(cand1_name, 0)
+                cand2_votes = comp_data.get(cand2_name, 0)
+                
+                # Create title for this comparison
+                title_text = f"<b>{cand1_name} vs {cand2_name}</b>"
+                title_para = Paragraph(title_text, bold_style)
+                
+                # Create the bar chart
+                bar_chart = create_head_to_head_bar_chart(
+                    cand1_name, cand2_name, 
+                    cand1_votes, cand2_votes,
+                    width=4.5*inch, height=0.8*inch
+                )
+                
+                # Add to comparison data
+                comparison_data.append([title_para])
+                comparison_data.append([bar_chart])
+                comparison_data.append([Spacer(1, 10)])
+        
+        if comparison_data:
+            # Remove the last spacer
+            if len(comparison_data) > 0 and isinstance(comparison_data[-1][0], Spacer):
+                comparison_data.pop()
+            
+            comparison_table = Table(comparison_data, colWidths=[6*inch])
+            comparison_table.setStyle(TableStyle([
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+            ]))
+            story.append(comparison_table)
+    
+    story.append(Spacer(1, 25))
+    
+    # BALLOT STATISTICS - matching online display exactly
     if results.get('statistics'):
         story.append(Paragraph("Ballot Statistics", heading_style))
         
@@ -475,7 +627,7 @@ def generate_results_pdf(poll: Dict, results: Dict) -> bytes:
             ])
         
         if stats_data:
-            stats_table = Table(stats_data, colWidths=[2.2*inch, 0.8*inch, 2.5*inch])
+            stats_table = Table(stats_data, colWidths=[2.6*inch, 0.8*inch, 3*inch])
             stats_table.setStyle(TableStyle([
                 ('FONTNAME', (0, 0), (0, -1), get_font_name('normal', use_bold=True)),
                 ('FONTNAME', (1, 0), (1, -1), get_font_name('normal', use_bold=True)),
@@ -500,124 +652,6 @@ def generate_results_pdf(poll: Dict, results: Dict) -> bytes:
             ParagraphStyle('Note', parent=normal_style, fontSize=8, 
                          textColor=colors.HexColor('#666666'), alignment=TA_CENTER)
         ))
-    
-    story.append(Spacer(1, 25))
-    
-    # Get pairwise matrix and detailed results for later use
-    pairwise_matrix = results.get('pairwise_matrix', {})
-    detailed_results = results.get('detailed_pairwise_results', {})
-    
-    # Head-to-Head Comparisons with Visual Bar Charts
-    story.append(Paragraph("Head-to-Head Comparisons", heading_style))
-    
-    if detailed_results:
-        # Sort comparisons for consistent ordering
-        comparisons = sorted(detailed_results.keys())
-        
-        # Create a table with bar charts for each comparison
-        comparison_data = []
-        
-        for comparison_key in comparisons:
-            comp_data = detailed_results[comparison_key]
-            
-            # Extract candidate names from the comparison key
-            parts = comparison_key.replace('_vs_', ' vs ').split(' vs ')
-            if len(parts) == 2:
-                cand1_name = parts[0]
-                cand2_name = parts[1]
-                
-                # Get vote counts
-                cand1_votes = comp_data.get(cand1_name, 0)
-                cand2_votes = comp_data.get(cand2_name, 0)
-                
-                # Create title for this comparison
-                title_text = f"<b>{cand1_name} vs {cand2_name}</b>"
-                title_para = Paragraph(title_text, bold_style)
-                
-                # Create the bar chart
-                bar_chart = create_head_to_head_bar_chart(
-                    cand1_name, cand2_name, 
-                    cand1_votes, cand2_votes,
-                    width=4.5*inch, height=0.8*inch
-                )
-                
-                # Add to comparison data
-                comparison_data.append([title_para])
-                comparison_data.append([bar_chart])
-                comparison_data.append([Spacer(1, 10)])
-        
-        if comparison_data:
-            # Remove the last spacer
-            if len(comparison_data) > 0 and isinstance(comparison_data[-1][0], Spacer):
-                comparison_data.pop()
-            
-            comparison_table = Table(comparison_data, colWidths=[6*inch])
-            comparison_table.setStyle(TableStyle([
-                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-                ('LEFTPADDING', (0, 0), (-1, -1), 0),
-                ('RIGHTPADDING', (0, 0), (-1, -1), 0),
-            ]))
-            story.append(comparison_table)
-    
-    # Also add standings table
-    if pairwise_matrix:
-        story.append(Spacer(1, 20))
-        story.append(Paragraph("Standings", heading_style))
-        
-        candidates = list(pairwise_matrix.keys())
-        
-        # Calculate wins, losses, ties for each candidate
-        candidate_stats = {}
-        for candidate in candidates:
-            wins = 0
-            losses = 0
-            ties = 0
-            for opponent in candidates:
-                if opponent != candidate:
-                    margin = pairwise_matrix.get(candidate, {}).get(opponent, 0)
-                    if margin > 0:
-                        wins += 1
-                    elif margin < 0:
-                        losses += 1
-                    else:
-                        ties += 1
-            candidate_stats[candidate] = {'wins': wins, 'losses': losses, 'ties': ties}
-        
-        # Create standings table
-        standings_data = [['Candidate', 'Wins', 'Losses', 'Ties']]
-        
-        sorted_candidates = sorted(candidates, 
-                                  key=lambda c: (candidate_stats[c]['wins'], -candidate_stats[c]['losses']), 
-                                  reverse=True)
-        
-        for candidate in sorted_candidates:
-            stats = candidate_stats[candidate]
-            is_winner = (winner and candidate == winner) or (candidate in winners)
-            row = [
-                candidate if not is_winner else f"{candidate} ★",
-                str(stats['wins']),
-                str(stats['losses']),
-                str(stats['ties'])
-            ]
-            standings_data.append(row)
-        
-        standings_table = Table(standings_data, colWidths=[3*inch, 1*inch, 1*inch, 1*inch])
-        standings_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), get_font_name('normal', use_bold=True)),
-            ('FONTNAME', (0, 1), (0, -1), get_font_name('normal')),
-            ('FONTNAME', (1, 1), (-1, -1), get_font_name('normal')),
-            ('FONTSIZE', (0, 0), (-1, -1), 10),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.lightgrey]),
-            ('TOPPADDING', (0, 0), (-1, -1), 8),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
-        ]))
-        
-        story.append(standings_table)
     
     # Footer
     story.append(Spacer(1, 40))

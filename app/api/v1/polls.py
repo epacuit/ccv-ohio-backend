@@ -127,6 +127,7 @@ async def create_poll(
         candidates=candidates_with_ids,
         settings=poll_data.get('settings', {}),
         is_private=poll_data.get('is_private', False),
+        is_test=poll_data.get('is_test', False),
         status='open',
         closing_at=poll_data.get('closing_at'),
         owner_email=poll_data.get('owner_email'),

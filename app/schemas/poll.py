@@ -26,7 +26,7 @@ class PollCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
     is_private: bool = False
-    candidates: List[CandidateSchema]
+    is_test: bool = False
     settings: Optional[PollSettingsSchema] = None
     closing_at: Optional[datetime] = None
     owner_email: Optional[str] = None

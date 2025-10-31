@@ -197,3 +197,34 @@ async def get_admin_stats(
         "recent_polls_7_days": recent_polls or 0,
         "average_ballots_per_poll": round(total_ballots / total_polls, 2) if total_polls and total_polls > 0 else 0
     }
+
+@router.delete("/admin/delete-test-polls")
+async def delete_test_polls(
+    password: str = Query(..., description="Super admin password"),
+    db: AsyncSession = Depends(get_db)
+):
+    """Delete all test polls"""
+    
+    if not verify_super_admin(password):
+        raise HTTPException(status_code=403, detail="Invalid admin password")
+    
+    # Find all test polls
+    stmt = select(Poll).where(Poll.is_test == True)
+    result = await db.execute(stmt)
+    test_polls = result.scalars().all()
+    
+    count = len(test_polls)
+    
+    if count == 0:
+        return {"message": "No test polls found", "deleted": 0}
+    
+    # Delete all test polls (cascade will delete ballots and results)
+    for poll in test_polls:
+        await db.delete(poll)
+    
+    await db.commit()
+    
+    return {
+        "message": f"Successfully deleted {count} test poll(s)",
+        "deleted": count
+    }

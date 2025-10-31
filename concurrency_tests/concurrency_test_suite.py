@@ -90,7 +90,8 @@ class VotingSystemTester:
             "candidates": candidates,
             "settings": settings or {"num_ranks": num_candidates},
             "is_private": is_private,
-            "owner_email": "test@example.com"
+            "owner_email": "test@example.com",
+            "is_test": True
         }
         
         async with httpx.AsyncClient() as client:
