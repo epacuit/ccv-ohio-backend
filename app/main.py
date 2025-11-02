@@ -40,7 +40,10 @@ async def log_requests(request: Request, call_next):
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[os.getenv("FRONTEND_URL", "http://localhost:5173"), "https://ccv-app.netlify.app"],
+    allow_origins=[
+        os.getenv("FRONTEND_URL", "http://localhost:5173"), 
+        "https://ccv-app.netlify.app", 
+        "https://consensus-choice.pacuit.org"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
