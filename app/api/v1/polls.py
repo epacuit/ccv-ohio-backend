@@ -214,6 +214,7 @@ async def get_polls_by_owner(
         poll_list.append({
             "id": str(p.id),
             "short_id": p.short_id,
+            "slug": p.slug,
             "title": p.title,
             "status": get_poll_status(p),
             "created_at": p.created_at.isoformat() if p.created_at else None,
@@ -265,6 +266,7 @@ async def get_poll(
     return {
         "id": str(poll.id),
         "short_id": poll.short_id,
+        "slug": poll.slug,
         "title": poll.title,
         "description": poll.description,
         "candidates": poll.candidates,  # Has IDs from creation

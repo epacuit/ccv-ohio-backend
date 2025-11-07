@@ -1,4 +1,4 @@
-# app/api/v1/ballots.py - WITH CACHE INVALIDATION AND TOKEN SUPPORT
+# app/api/v1/ballots.py - WITH CACHE INVALIDATION, TOKEN SUPPORT, AND GET BALLOT
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, update
@@ -6,11 +6,15 @@ from typing import Dict, Any, List
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 import hashlib
+import os
 
 from app.db import get_db
 from app.models import Ballot, Poll, Result, Voter
 
 router = APIRouter()
+
+# Development mode - auto-generate fingerprints for testing
+DEV_MODE = os.getenv('DEV_MODE', 'false').lower() == 'true'
 
 async def invalidate_results_cache(poll_id: UUID, db: AsyncSession):
     """Mark cached results as stale when new ballots are submitted"""
@@ -57,6 +61,114 @@ def ensure_write_ins_have_ids(write_ins: List[Dict[str, Any]]) -> List[Dict[str,
     
     return processed_write_ins
 
+# ==============================================================================
+# GET BALLOT - Retrieve existing ballot for voter
+# ==============================================================================
+
+@router.get("/{poll_id}/ballot")
+async def get_voter_ballot(
+    poll_id: str,
+    voter_fingerprint: str = Query(None),
+    voter_token: str = Query(None),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get a voter's existing ballot for pre-populating the voting form.
+    
+    Returns 404 if:
+    - Poll not found
+    - Voter hasn't voted yet
+    
+    For public polls: uses voter_fingerprint
+    For private polls: uses voter_token
+    
+    Args:
+        poll_id: Poll identifier (UUID, short_id, or slug)
+        voter_fingerprint: Unique voter identifier for public polls
+        voter_token: Voter token for private polls
+    
+    Returns:
+        {
+            "has_voted": True,
+            "ballot": {
+                "ballot_id": "...",
+                "rankings": [...],
+                "write_ins": [...],
+                "updated_at": "..."
+            }
+        }
+    """
+    # Find poll using same logic as submit_ballot
+    poll = None
+    
+    if isinstance(poll_id, str):
+        # Try as short_id first
+        stmt = select(Poll).where(Poll.short_id == poll_id)
+        result = await db.execute(stmt)
+        poll = result.scalar_one_or_none()
+        
+        # If not found, try as UUID
+        if not poll:
+            try:
+                poll_uuid = UUID(poll_id)
+                stmt = select(Poll).where(Poll.id == poll_uuid)
+                result = await db.execute(stmt)
+                poll = result.scalar_one_or_none()
+            except ValueError:
+                pass
+    
+    # Try as slug if still not found
+    if not poll:
+        stmt = select(Poll).where(Poll.slug == poll_id)
+        result = await db.execute(stmt)
+        poll = result.scalar_one_or_none()
+    
+    if not poll:
+        raise HTTPException(status_code=404, detail="Poll not found")
+    
+    # Find ballot
+    ballot = None
+    
+    if poll.is_private and voter_token:
+        # Private poll - find by token
+        stmt = select(Ballot).where(
+            Ballot.poll_id == poll.id,
+            Ballot.voter_token == voter_token
+        )
+        result = await db.execute(stmt)
+        ballot = result.scalar_one_or_none()
+    elif voter_fingerprint:
+        # Public poll - find by hashed fingerprint
+        fingerprint_hash = hash_fingerprint(voter_fingerprint)
+        stmt = select(Ballot).where(
+            Ballot.poll_id == poll.id,
+            Ballot.voter_fingerprint == fingerprint_hash
+        )
+        result = await db.execute(stmt)
+        ballot = result.scalar_one_or_none()
+    else:
+        raise HTTPException(
+            status_code=400, 
+            detail="Must provide voter_fingerprint or voter_token"
+        )
+    
+    if not ballot:
+        raise HTTPException(status_code=404, detail="No ballot found for this voter")
+    
+    return {
+        "has_voted": True,
+        "ballot": {
+            "ballot_id": str(ballot.id),
+            "rankings": ballot.rankings,
+            "write_ins": ballot.write_ins or [],
+            "updated_at": ballot.updated_at.isoformat() if ballot.updated_at else None
+        }
+    }
+
+# ==============================================================================
+# SUBMIT/UPDATE BALLOT
+# ==============================================================================
+
 @router.post("/")
 async def submit_ballot(
     ballot_data: Dict[str, Any],
@@ -87,7 +199,7 @@ async def submit_ballot(
     
     # Try as slug if still not found
     if not poll:
-        stmt = select(Poll).where(Poll.slug == poll_id)
+        stmt = select(Poll).where(Poll.slug == poll_id_input)
         result = await db.execute(stmt)
         poll = result.scalar_one_or_none()
     
@@ -97,15 +209,66 @@ async def submit_ballot(
     # Use the actual poll UUID for all operations
     poll_id = poll.id
     
-    # Check if poll is open
+    # ========== VALIDATION: Poll Status and Deadline ==========
+    # Check if poll is closed
     if poll.status == 'closed':
-        return {"success": False, "message": "Poll is closed"}
+        raise HTTPException(status_code=400, detail="Poll is closed")
     
     if poll.closing_at and poll.closing_at < datetime.now(timezone.utc):
         # Poll should be closed but status not updated
         poll.status = 'closed'
         await db.commit()
-        return {"success": False, "message": "Poll is closed"}
+        raise HTTPException(status_code=400, detail="Poll voting deadline has passed")
+    
+    # ========== VALIDATION: Ballot Data ==========
+    rankings = ballot_data.get('rankings', [])
+    write_ins = ballot_data.get('write_ins', [])
+    
+    # Get valid candidate IDs from poll
+    valid_candidate_ids = {c['id'] for c in poll.candidates}
+    
+    # Check if write-ins are allowed
+    if write_ins and not poll.settings.get('allow_write_ins', False):
+        raise HTTPException(status_code=400, detail="Write-in candidates are not allowed for this poll")
+    
+    # Validate candidate IDs and check for write-ins
+    for ranking in rankings:
+        candidate_id = ranking.get('candidate_id')
+        
+        # Check if it's a write-in
+        if candidate_id and candidate_id.startswith('write-in-'):
+            if not poll.settings.get('allow_write_ins', False):
+                raise HTTPException(status_code=400, detail="Write-in candidates are not allowed for this poll")
+        elif candidate_id not in valid_candidate_ids:
+            raise HTTPException(status_code=400, detail=f"Invalid candidate ID: {candidate_id}")
+    
+    # Check for duplicate candidates
+    candidate_ids_in_ballot = [r['candidate_id'] for r in rankings]
+    if len(candidate_ids_in_ballot) != len(set(candidate_ids_in_ballot)):
+        raise HTTPException(status_code=400, detail="Cannot rank the same candidate multiple times")
+    
+    # Check for ties when not allowed
+    if not poll.settings.get('allow_ties', True):
+        ranks = [r['rank'] for r in rankings]
+        if len(ranks) != len(set(ranks)):
+            raise HTTPException(status_code=400, detail="Tied rankings are not allowed for this poll")
+    
+    # Check num_ranks limit
+    num_ranks = poll.settings.get('num_ranks')
+    if num_ranks and len(rankings) > num_ranks:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot rank more than {num_ranks} candidates"
+        )
+    
+    # Check complete ranking requirement
+    if poll.settings.get('require_complete_ranking', False):
+        num_candidates = len(poll.candidates)
+        if len(rankings) < num_candidates:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Must rank all {num_candidates} candidates"
+            )
     
     # Extract voter token
     voter_token = ballot_data.get('voter_token')
@@ -126,8 +289,7 @@ async def submit_ballot(
         if not voter:
             raise HTTPException(status_code=403, detail="Invalid voting token")
     
-    # CRITICAL: Ensure write-ins have proper IDs
-    write_ins = ballot_data.get('write_ins', [])
+    # CRITICAL: Ensure write-ins have proper IDs (only if they passed validation)
     if write_ins:
         write_ins = ensure_write_ins_have_ids(write_ins)
         
@@ -137,13 +299,19 @@ async def submit_ballot(
         for write_in in write_ins:
             matches = find_candidate_matches(write_in['name'], poll.candidates)
             if matches:
-                return {
-                    "success": False, 
-                    "message": f"Write-in '{write_in['name']}' conflicts with existing candidate '{matches[0]['name']}'"
-                }
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Write-in '{write_in['name']}' conflicts with existing candidate '{matches[0]['name']}'"
+                )
     
     # Hash sensitive data
-    voter_fingerprint = hash_fingerprint(ballot_data.get('voter_fingerprint'))
+    # Dev mode: auto-generate fingerprint if not provided
+    fp_input = ballot_data.get('voter_fingerprint')
+    if DEV_MODE and not fp_input:
+        fp_input = f'dev-{uuid4().hex[:8]}'
+        print(f"🧪 DEV MODE: Auto-generated fingerprint: {fp_input}")
+    
+    voter_fingerprint = hash_fingerprint(fp_input)
     ip_hash = hash_ip(ballot_data.get('ip_address'))
     
     # Check for existing ballot
@@ -157,9 +325,7 @@ async def submit_ballot(
         )
         result = await db.execute(stmt)
         existing_ballot = result.scalar_one_or_none()
-        
-        if existing_ballot:
-            raise HTTPException(status_code=400, detail="This token has already been used to vote")
+        # Note: If ballot exists, we'll update it below (not error)
             
     elif voter_fingerprint:
         # Public poll - check by fingerprint
@@ -170,9 +336,16 @@ async def submit_ballot(
         result = await db.execute(stmt)
         existing_ballot = result.scalar_one_or_none()
     
-    if existing_ballot and not poll.is_private:
-        # Update existing ballot (only for public polls)
-        existing_ballot.rankings = ballot_data['rankings']
+    if existing_ballot:
+        # Check if vote updates are allowed for this poll
+        if not poll.settings.get('allow_vote_updates', True):
+            raise HTTPException(
+                status_code=400, 
+                detail="Vote updates are not allowed for this poll. Your original vote has been recorded."
+            )
+        
+        # Update existing ballot (for both public and private polls)
+        existing_ballot.rankings = rankings
         existing_ballot.write_ins = write_ins  # Now with proper IDs
         existing_ballot.updated_at = datetime.now(timezone.utc)
         existing_ballot.ip_hash = ip_hash
@@ -197,7 +370,7 @@ async def submit_ballot(
         # Create new ballot
         ballot = Ballot(
             poll_id=poll_id,
-            rankings=ballot_data['rankings'],
+            rankings=rankings,
             write_ins=write_ins,  # Now with proper IDs
             count=ballot_data.get('count', 1),
             voter_fingerprint=voter_fingerprint,

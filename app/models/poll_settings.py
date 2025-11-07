@@ -7,6 +7,7 @@ class PollSettings(BaseModel):
     require_complete_ranking: bool = False
     randomize_options: bool = False
     allow_write_ins: bool = False
+    allow_vote_updates: bool = True  # Allow voters to change their vote
     show_live_results: bool = False
     results_visibility: str = "public"  # public|voters|owner
     anonymize_voters: bool = True
