@@ -23,7 +23,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="CCV Backend",
-    description="Consensus Choice Voting API",
+    description="Consensus Choice API",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -43,7 +43,7 @@ app.add_middleware(
     allow_origins=[
         os.getenv("FRONTEND_URL", "http://localhost:5173"), 
         "https://ccv-app.netlify.app", 
-        "https://consensus-choice.pacuit.org"],
+        "https://app.betterchoices.vote"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
