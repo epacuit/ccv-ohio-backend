@@ -386,16 +386,19 @@ def get_ballot_statistics_v2(
                 # Total candidates available for this ballot
                 total_candidates_for_ballot = len(base_candidate_ids | ballot_write_in_ids)
                 
-                # 1. Ranked (almost) all candidates - all except possibly 1
-                if num_ranked >= (total_candidates_for_ballot - 1):
+                # Check for gaps (we'll use this multiple times)
+                has_gaps_flag = ranking_dict and check_skipped_ranks(ranking_dict)
+                
+                # 1. Ranked (almost) all candidates - all except possibly 1, WITH NO GAPS
+                if num_ranked >= (total_candidates_for_ballot - 1) and not has_gaps_flag:
                     ranked_almost_all += ballot.count
                 
-                # 2. Partial ranking - left at least 2 candidates unranked
-                if num_ranked <= (total_candidates_for_ballot - 2):
+                # 2. Partial ranking - ranked 2+ but not all (excludes bullet votes)
+                if 2 <= num_ranked <= (total_candidates_for_ballot - 2):
                     partial_ranking += ballot.count
                 
                 # 3. Has gaps?
-                if ranking_dict and check_skipped_ranks(ranking_dict):
+                if has_gaps_flag:
                     had_gaps += ballot.count
                 
                 # 4. Single choice only (bullet vote)?
