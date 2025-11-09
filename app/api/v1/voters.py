@@ -8,14 +8,12 @@ from uuid import UUID
 import secrets
 import hashlib
 import os
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 from fastapi import Query
 from app.models import Voter
 
 from app.db import get_db
 from app.models import Poll, Ballot, Voter
+from app.services.email import send_email
 
 router = APIRouter()
 
@@ -26,81 +24,6 @@ def generate_voter_token() -> str:
 def hash_email(email: str) -> str:
     """Hash email for privacy"""
     return hashlib.sha256(email.lower().encode()).hexdigest()
-
-def send_email(to_email: str, subject: str, text_body: str, html_body: str) -> bool:
-    """
-    Send email based on EMAIL_PROVIDER environment variable.
-    - mailhog: Development with MailHog
-    - postmark: Production with Postmark
-    """
-    email_provider = os.getenv("EMAIL_PROVIDER", "mailhog").lower()
-    from_email = os.getenv("FROM_EMAIL", "noreply@ccv.app")
-    
-    try:
-        if email_provider == "mailhog":
-            # Development: Use MailHog
-            mailhog_host = os.getenv("MAILHOG_HOST", "localhost")
-            mailhog_port = int(os.getenv("MAILHOG_PORT", "1025"))
-            
-            msg = MIMEMultipart('alternative')
-            msg['Subject'] = subject
-            msg['From'] = from_email
-            msg['To'] = to_email
-            
-            msg.attach(MIMEText(text_body, 'plain'))
-            msg.attach(MIMEText(html_body, 'html'))
-            
-            smtp = smtplib.SMTP(mailhog_host, mailhog_port)
-            smtp.send_message(msg)
-            smtp.quit()
-            
-            print(f"✓ Email sent to {to_email} via MailHog")
-            return True
-            
-        elif email_provider == "postmark":
-            # Production: Use Postmark
-            postmark_token = os.getenv("POSTMARK_SERVER_TOKEN")
-            if not postmark_token or postmark_token == "your-token-here-if-testing":
-                print(f"✗ Postmark token not configured. Set POSTMARK_SERVER_TOKEN in .env")
-                return False
-            
-            msg = MIMEMultipart('alternative')
-            msg['Subject'] = subject
-            msg['From'] = from_email
-            msg['To'] = to_email
-            
-            # Postmark-specific headers
-            msg['X-PM-Tag'] = 'voter-invitation'
-            msg['X-PM-TrackOpens'] = 'true'
-            
-            msg.attach(MIMEText(text_body, 'plain'))
-            msg.attach(MIMEText(html_body, 'html'))
-            
-            smtp = smtplib.SMTP('smtp.postmarkapp.com', 587)
-            smtp.starttls()
-            smtp.login(postmark_token, postmark_token)  # Postmark uses token for both user and pass
-            smtp.send_message(msg)
-            smtp.quit()
-            
-            print(f"✓ Email sent to {to_email} via Postmark")
-            return True
-            
-        else:
-            print(f"✗ Unknown EMAIL_PROVIDER: {email_provider}")
-            return False
-            
-    except Exception as e:
-        print(f"✗ Failed to send email to {to_email}: {e}")
-        
-        if email_provider == "mailhog":
-            print("  Make sure MailHog is running:")
-            print("  docker run -p 1025:1025 -p 8025:8025 mailhog/mailhog")
-        elif email_provider == "postmark":
-            print("  Check your Postmark configuration:")
-            print("  - POSTMARK_SERVER_TOKEN is set correctly")
-            print("  - FROM_EMAIL is verified in Postmark")
-        
-        return False
 
 @router.get("/polls/{poll_id}/voters")
 async def get_poll_voters(
@@ -302,28 +225,29 @@ If you believe this was sent in error, you can ignore this message.
 </html>
 """
             
-            if send_email(voter_info['email'], f"You're invited to vote in: {poll.title}", text_body, html_body):
+            # Send email using centralized service
+            email_result = await send_email(
+                to_email=voter_info['email'],
+                subject=f"You're invited to vote in: {poll.title}",
+                text_body=text_body,
+                html_body=html_body
+            )
+            
+            if email_result["success"]:
                 # Update invitation_sent flag
                 stmt = select(Voter).where(
                     Voter.poll_id == poll.id,
                     Voter.email == voter_info['email']
                 )
-                result = await db.execute(stmt)
-                voter = result.scalar_one()
+                result_db = await db.execute(stmt)
+                voter = result_db.scalar_one()
                 voter.invitation_sent = True
                 voter.invitation_sent_at = datetime.now(timezone.utc)
                 sent_count += 1
         
         await db.commit()
         
-        # Provide appropriate message based on environment
-        email_provider = os.getenv("EMAIL_PROVIDER", "mailhog")
-        if email_provider == "mailhog":
-            note = "Check MailHog at http://localhost:8025 to see emails"
-        elif email_provider == "postmark":
-            note = f"Sent {sent_count} email(s) via Postmark"
-        else:
-            note = None
+        note = f"Sent {sent_count} invitation email(s)" if sent_count > 0 else None
     else:
         note = None
     
@@ -594,8 +518,15 @@ If you believe this was sent in error, you can ignore this message.
 </html>
 """
         
-        # Try to send email
-        if send_email(voter.email, f"You're invited to vote in: {poll.title}", text_body, html_body):
+        # Send email using centralized service
+        email_result = await send_email(
+            to_email=voter.email,
+            subject=f"You're invited to vote in: {poll.title}",
+            text_body=text_body,
+            html_body=html_body
+        )
+        
+        if email_result["success"]:
             # Mark as sent
             voter.invitation_sent = True
             voter.invitation_sent_at = datetime.now(timezone.utc)
@@ -607,24 +538,11 @@ If you believe this was sent in error, you can ignore this message.
     
     await db.commit()
     
-    # Provide appropriate message based on environment
-    email_provider = os.getenv("EMAIL_PROVIDER", "mailhog")
-    environment = os.getenv("ENVIRONMENT", "development")
-    
-    if email_provider == "mailhog":
-        note = "Check MailHog at http://localhost:8025 to see emails"
-    elif email_provider == "postmark":
-        note = "Sent via Postmark. Check your Postmark dashboard for delivery status."
-    else:
-        note = None
-    
     return {
         "success": True,
         "sent_to": sent_to,
         "failed": failed,
-        "message": f"Sent {len(sent_to)} invitation(s)" + (f", {len(failed)} failed" if failed else ""),
-        "note": note,
-        "environment": environment
+        "message": f"Sent {len(sent_to)} invitation(s)" + (f", {len(failed)} failed" if failed else "")
     }
 
 # Add these endpoints to your ballots.py file

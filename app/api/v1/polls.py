@@ -99,11 +99,18 @@ async def create_poll(
     # Handle custom slugs if requested
     slug = poll_data.get('slug')
     if slug:
-        allowed_emails = json.loads(os.getenv("SLUG_ALLOWED_EMAILS", "[]"))
-        if poll_data.get('owner_email') not in allowed_emails:
-            slug = None
-        else:
-            # Check if slug is already taken
+        # Allow slugs for test polls without restriction
+        # For production polls, check if owner is in allowed list
+        if not poll_data.get('is_test', False):
+            allowed_emails_json = os.getenv("SLUG_ALLOWED_EMAILS", "[]")
+            allowed_emails = json.loads(allowed_emails_json)
+            
+            # Only restrict slugs if SLUG_ALLOWED_EMAILS is explicitly configured
+            if allowed_emails and poll_data.get('owner_email') not in allowed_emails:
+                slug = None
+        
+        # Check if slug is already taken (for both test and non-test polls)
+        if slug:
             stmt = select(Poll).where(Poll.slug == slug)
             result = await db.execute(stmt)
             if result.scalar_one_or_none():
@@ -753,131 +760,4 @@ async def export_poll_csv(
         }
     )
 
-@router.post("/polls/{poll_id}/send-invitations")
-async def send_poll_invitations(
-    poll_id: str,
-    request_data: Dict[str, Any],
-    db: AsyncSession = Depends(get_db)
-):
-    """Send or resend invitations to voters - admin only"""
-    
-    admin_token = request_data.get('admin_token')
-    emails = request_data.get('emails', [])  # If empty, send to all unsent
-    
-    # Find poll
-    poll = None
-    try:
-        poll_uuid = UUID(poll_id)
-        stmt = select(Poll).where(Poll.id == poll_uuid)
-    except ValueError:
-        stmt = select(Poll).where(Poll.short_id == poll_id)
-    
-    result = await db.execute(stmt)
-    poll = result.scalar_one_or_none()
-    
-    # Try as slug if not found
-    if not poll:
-        stmt = select(Poll).where(Poll.slug == poll_id)
-        result = await db.execute(stmt)
-        poll = result.scalar_one_or_none()
-    
-    if not poll:
-        raise HTTPException(status_code=404, detail="Poll not found")
-    
-    # Verify admin token
-    if poll.admin_token != admin_token:
-        raise HTTPException(status_code=403, detail="Invalid admin token")
-    
-    # Get voters to send to
-    if emails:
-        # Send to specific emails
-        stmt = select(Voter).where(
-            Voter.poll_id == poll.id,
-            Voter.email.in_([e.lower().strip() for e in emails])
-        )
-    else:
-        # Send to all who haven't been invited
-        stmt = select(Voter).where(
-            Voter.poll_id == poll.id,
-            Voter.invitation_sent == False
-        )
-    
-    result = await db.execute(stmt)
-    voters = result.scalars().all()
-    
-    sent_to = []
-    failed = []
-    
-    # Actually send emails via SMTP to MailHog
-    import smtplib
-    from email.mime.text import MIMEText
-    from email.mime.multipart import MIMEMultipart
-    
-    BASE_URL = os.getenv("BASE_URL", "http://localhost:3000")
-    
-    for voter in voters:
-        voting_link = f"{BASE_URL}/vote/{poll.short_id}?token={voter.token}"
-        
-        # Create actual email
-        msg = MIMEMultipart('alternative')
-        msg['Subject'] = f"You're invited to vote in: {poll.title}"
-        msg['From'] = "noreply@rankedchoice.app"
-        msg['To'] = voter.email
-        
-        # Plain text version
-        text_body = f"""You've been invited to vote in: {poll.title}
 
-Click here to vote: {voting_link}
-
-This is a private poll. Only invited voters can participate.
-"""
-        
-        # HTML version  
-        html_body = f"""
-<html>
-  <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-    <h2 style="color: #333;">You're invited to vote!</h2>
-    <p><strong>Poll:</strong> {poll.title}</p>
-    <p style="margin: 30px 0;">
-      <a href="{voting_link}" style="background-color: #1976d2; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block;">
-        Vote Now
-      </a>
-    </p>
-    <p style="color: #666;">Or copy this link:<br>
-    <code style="background: #f5f5f5; padding: 8px; display: block; margin: 10px 0; word-break: break-all;">{voting_link}</code>
-    </p>
-    <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
-    <p style="color: #999; font-size: 12px;">This is a private poll. Only invited voters can participate.</p>
-  </body>
-</html>
-"""
-        
-        msg.attach(MIMEText(text_body, 'plain'))
-        msg.attach(MIMEText(html_body, 'html'))
-        
-        try:
-            # Connect to MailHog SMTP server on port 1025
-            smtp = smtplib.SMTP('localhost', 1025)
-            smtp.send_message(msg)
-            smtp.quit()
-            
-            # Mark as sent
-            voter.invitation_sent = True
-            voter.invitation_sent_at = datetime.now(timezone.utc)
-            sent_to.append(voter.email)
-            print(f"✓ Email sent to {voter.email}")
-            
-        except Exception as e:
-            failed.append(voter.email)
-            print(f"✗ Failed to send email to {voter.email}: {e}")
-            # Don't mark as sent if it failed
-    
-    await db.commit()
-    
-    return {
-        "success": True,
-        "sent_to": sent_to,
-        "failed": failed,
-        "message": f"Sent {len(sent_to)} invitation(s)" + (f", {len(failed)} failed" if failed else ""),
-        "note": "Check MailHog at http://localhost:8025 to see emails"
-    }
