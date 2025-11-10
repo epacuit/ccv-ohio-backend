@@ -184,6 +184,7 @@ async def create_poll(
         "id": str(poll.id),
         "short_id": poll.short_id,
         "slug": poll.slug,
+        "title": poll.title,  # Include title for success page
         "admin_token": poll.admin_token,
         "url": f"{BASE_URL}/p/{poll.short_id}",
         "qr_code": f"{BASE_URL}/qr/{poll.short_id}.png",
@@ -759,5 +760,3 @@ async def export_poll_csv(
             "Content-Disposition": f"attachment; filename={filename}"
         }
     )
-
-

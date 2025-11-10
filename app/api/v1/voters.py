@@ -280,15 +280,7 @@ If you believe this was sent in error, you can ignore this message.
             note = None
     else:
         note = None
-
-    print(f"DEBUG add_voters:")
-    print(f"  added: {[v['email'] for v in added]}")
-    print(f"  already_exists: {[v['email'] for v in already_exists]}")
-    print(f"  duplicates: {duplicates}")
-    print(f"  send_invitations: {send_invitations}")
-    print(f"  EMAIL_PROVIDER: {os.getenv('EMAIL_PROVIDER')}")
-    print(f"  FRONTEND_URL: {os.getenv('FRONTEND_URL')}")
-
+    
     return {
         "success": True,
         "added": [v['email'] for v in added],
@@ -447,6 +439,7 @@ async def send_poll_invitations(
     
     admin_token = request_data.get('admin_token')
     emails = request_data.get('emails', [])  # If empty, send to all unsent
+    personal_message = request_data.get('personal_message')  # Optional personal message
     
     # Find poll
     poll = None
@@ -512,8 +505,10 @@ async def send_poll_invitations(
         voting_link = f"{FRONTEND_URL}/vote/{poll.short_id}?token={voter.token}"
         
         # Plain text version
+        personal_msg_text = f"\n{personal_message}\n\n" if personal_message else ""
+        
         text_body = f"""You've been invited to vote in: {poll.title}
-
+{personal_msg_text}
 Click here to vote: {voting_link}
 
 This is a private poll. Only invited voters can participate.
@@ -524,6 +519,12 @@ If you believe this was sent in error, you can ignore this message.
 """
         
         # HTML version - Professional design
+        personal_msg_html = f"""
+        <div style="background-color: rgba(25, 118, 210, 0.08); border-left: 4px solid #1976d2; padding: 15px; margin-bottom: 20px; font-style: italic;">
+            <p style="margin: 0; color: #333; font-size: 14px;">"{personal_message}"</p>
+        </div>
+        """ if personal_message else ""
+        
         html_body = f"""
 <!DOCTYPE html>
 <html>
@@ -534,6 +535,7 @@ If you believe this was sent in error, you can ignore this message.
 <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
     <div style="background-color: #f8f9fa; border-radius: 8px; padding: 30px; margin-bottom: 20px;">
         <h1 style="color: #333; margin-top: 0; font-size: 24px;">You're invited to vote!</h1>
+        {personal_msg_html}
         <p style="font-size: 16px; margin: 15px 0;"><strong>Poll:</strong> {poll.title}</p>
         {f'<p style="font-size: 14px; color: #666; margin: 15px 0;">{poll.description}</p>' if poll.description else ''}
         
@@ -555,7 +557,8 @@ If you believe this was sent in error, you can ignore this message.
         <p style="font-size: 12px; color: #999; margin: 5px 0;">
             This is a private poll. Only invited voters can participate.
         </p>
-        <p style="font-size: 11px; color: #999; margin: 5px 0;">
+        <p style="font-size: 11px; color: #999; margin: 5px 0;"
+>
             If you believe this was sent in error, you can ignore this message.
         </p>
     </div>
@@ -670,14 +673,3 @@ async def check_existing_ballot(
             "has_voted": False,
             "ballot": None
         }
-    
-@router.get("/debug-env")
-async def debug_env():
-    """DEBUG: Check what environment variables are actually set"""
-    return {
-        "EMAIL_PROVIDER": os.getenv("EMAIL_PROVIDER"),
-        "EMAIL_PROVIDER_raw": os.environ.get("EMAIL_PROVIDER"),
-        "FRONTEND_URL": os.getenv("FRONTEND_URL"),
-        "POSTMARK_API_TOKEN": "SET" if os.getenv("POSTMARK_API_TOKEN") else "NOT SET",
-        "all_env_keys": [k for k in os.environ.keys() if "EMAIL" in k or "FRONTEND" in k]
-    }
