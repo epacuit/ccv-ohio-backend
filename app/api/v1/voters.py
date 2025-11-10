@@ -134,6 +134,7 @@ async def add_poll_voters(
     
     added = []
     duplicates = []
+    already_exists = []  # Voters that exist but can be invited
     
     for email in emails:
         email = email.lower().strip()
@@ -147,8 +148,15 @@ async def add_poll_voters(
         existing = result.scalar_one_or_none()
         
         if existing:
-            duplicates.append(email)
-            continue  # CRITICAL: Skip to next email, don't try to add duplicate
+            # If sending invitations and they haven't been invited, add to send list
+            if send_invitations and not existing.invitation_sent:
+                already_exists.append({
+                    "email": email,
+                    "token": existing.token
+                })
+            else:
+                # True duplicate - already exists AND already invited
+                duplicates.append(email)
         else:
             # Create new voter
             voter = Voter(
@@ -168,7 +176,7 @@ async def add_poll_voters(
     await db.commit()
     
     # Send invitations if requested
-    if send_invitations and added:
+    if send_invitations and (added or already_exists):
         # CRITICAL: Get frontend URL from environment - NO localhost default for production
         FRONTEND_URL = os.getenv("FRONTEND_URL")
         if not FRONTEND_URL:
@@ -181,7 +189,10 @@ async def add_poll_voters(
 
         sent_count = 0
         
-        for voter_info in added:
+        # Send to both newly added voters AND existing uninvited voters
+        all_to_send = added + already_exists
+        
+        for voter_info in all_to_send:
             voting_link = f"{FRONTEND_URL}/vote/{poll.short_id}?token={voter_info['token']}"
             
             text_body = f"""You've been invited to vote in: {poll.title}
@@ -258,12 +269,13 @@ If you believe this was sent in error, you can ignore this message.
         
         # Build proper note based on email provider
         if sent_count > 0:
-            # Get the provider from the last email result (they should all use same provider)
-            provider = email_result.get("provider", "unknown")
+            # Get provider from environment (what's actually configured)
+            provider = os.getenv("EMAIL_PROVIDER", "mailhog")
             if provider == "postmark":
                 note = f"Sent {sent_count} invitation email(s) via Postmark"
             else:
-                note = f"Sent {sent_count} invitation email(s). Check MailHog at http://{os.getenv('MAILHOG_HOST', 'localhost')}:8025"
+                mailhog_host = os.getenv('MAILHOG_HOST', 'localhost')
+                note = f"Sent {sent_count} invitation email(s). Check MailHog at http://{mailhog_host}:8025"
         else:
             note = None
     else:
@@ -272,8 +284,9 @@ If you believe this was sent in error, you can ignore this message.
     return {
         "success": True,
         "added": [v['email'] for v in added],
+        "already_existed": [v['email'] for v in already_exists],
         "duplicates": duplicates,
-        "message": f"Added {len(added)} voter(s)",
+        "message": f"Added {len(added)} voter(s)" + (f", invited {len(already_exists)} existing" if already_exists else ""),
         "note": note
     }
 
