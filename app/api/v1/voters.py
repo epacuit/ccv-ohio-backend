@@ -280,7 +280,15 @@ If you believe this was sent in error, you can ignore this message.
             note = None
     else:
         note = None
-    
+
+    print(f"DEBUG add_voters:")
+    print(f"  added: {[v['email'] for v in added]}")
+    print(f"  already_exists: {[v['email'] for v in already_exists]}")
+    print(f"  duplicates: {duplicates}")
+    print(f"  send_invitations: {send_invitations}")
+    print(f"  EMAIL_PROVIDER: {os.getenv('EMAIL_PROVIDER')}")
+    print(f"  FRONTEND_URL: {os.getenv('FRONTEND_URL')}")
+
     return {
         "success": True,
         "added": [v['email'] for v in added],
@@ -662,3 +670,14 @@ async def check_existing_ballot(
             "has_voted": False,
             "ballot": None
         }
+    
+@router.get("/debug-env")
+async def debug_env():
+    """DEBUG: Check what environment variables are actually set"""
+    return {
+        "EMAIL_PROVIDER": os.getenv("EMAIL_PROVIDER"),
+        "EMAIL_PROVIDER_raw": os.environ.get("EMAIL_PROVIDER"),
+        "FRONTEND_URL": os.getenv("FRONTEND_URL"),
+        "POSTMARK_API_TOKEN": "SET" if os.getenv("POSTMARK_API_TOKEN") else "NOT SET",
+        "all_env_keys": [k for k in os.environ.keys() if "EMAIL" in k or "FRONTEND" in k]
+    }
