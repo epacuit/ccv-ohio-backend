@@ -45,7 +45,7 @@ class EmailService:
             from_email: Override default from email (optional)
         
         Returns:
-            Dict with 'success' (bool) and 'message' (str)
+            Dict with 'success' (bool), 'message' (str), and 'provider' (str)
         """
         from_addr = from_email or self.from_email
         
@@ -62,7 +62,8 @@ class EmailService:
             logger.error(f"Failed to send email to {to_email}: {e}")
             return {
                 "success": False,
-                "message": str(e)
+                "message": str(e),
+                "provider": self.provider
             }
     
     async def _send_via_postmark(

@@ -148,6 +148,7 @@ async def add_poll_voters(
         
         if existing:
             duplicates.append(email)
+            continue  # CRITICAL: Skip to next email, don't try to add duplicate
         else:
             # Create new voter
             voter = Voter(
@@ -168,7 +169,15 @@ async def add_poll_voters(
     
     # Send invitations if requested
     if send_invitations and added:
-        FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
+        # CRITICAL: Get frontend URL from environment - NO localhost default for production
+        FRONTEND_URL = os.getenv("FRONTEND_URL")
+        if not FRONTEND_URL:
+            return {
+                "success": False,
+                "error": "FRONTEND_URL not configured - cannot send invitations",
+                "added": [v['email'] for v in added],
+                "duplicates": duplicates
+            }
 
         sent_count = 0
         
@@ -247,7 +256,16 @@ If you believe this was sent in error, you can ignore this message.
         
         await db.commit()
         
-        note = f"Sent {sent_count} invitation email(s)" if sent_count > 0 else None
+        # Build proper note based on email provider
+        if sent_count > 0:
+            # Get the provider from the last email result (they should all use same provider)
+            provider = email_result.get("provider", "unknown")
+            if provider == "postmark":
+                note = f"Sent {sent_count} invitation email(s) via Postmark"
+            else:
+                note = f"Sent {sent_count} invitation email(s). Check MailHog at http://{os.getenv('MAILHOG_HOST', 'localhost')}:8025"
+        else:
+            note = None
     else:
         note = None
     
@@ -461,7 +479,13 @@ async def send_poll_invitations(
     sent_to = []
     failed = []
     
-    FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
+    # CRITICAL: Get frontend URL from environment - NO localhost default for production  
+    FRONTEND_URL = os.getenv("FRONTEND_URL")
+    if not FRONTEND_URL:
+        raise HTTPException(
+            status_code=500,
+            detail="FRONTEND_URL environment variable not configured. Cannot send invitations."
+        )
     
     for voter in voters:
         voting_link = f"{FRONTEND_URL}/vote/{poll.short_id}?token={voter.token}"
@@ -538,11 +562,24 @@ If you believe this was sent in error, you can ignore this message.
     
     await db.commit()
     
+    # Determine provider for response message
+    provider = "unknown"
+    if sent_to:
+        # Get provider from environment (should match what email service is using)
+        provider = os.getenv("EMAIL_PROVIDER", "mailhog")
+    
+    response_message = f"Sent {len(sent_to)} invitation(s)" + (f", {len(failed)} failed" if failed else "")
+    if provider == "postmark":
+        response_message += " via Postmark"
+    elif provider == "mailhog":
+        response_message += f". Check MailHog at http://{os.getenv('MAILHOG_HOST', 'localhost')}:8025"
+    
     return {
         "success": True,
         "sent_to": sent_to,
         "failed": failed,
-        "message": f"Sent {len(sent_to)} invitation(s)" + (f", {len(failed)} failed" if failed else "")
+        "message": response_message,
+        "provider": provider
     }
 
 # Add these endpoints to your ballots.py file
