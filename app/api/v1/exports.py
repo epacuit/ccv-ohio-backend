@@ -5,6 +5,7 @@ from sqlalchemy import select
 from typing import Optional
 from uuid import UUID
 import csv
+import os
 from io import StringIO, BytesIO
 
 from app.db import get_db
@@ -76,7 +77,9 @@ async def download_results_pdf(
     }
     
     try:
-        pdf_content = generate_results_pdf(poll_dict, results_data)
+        # Get base URL from environment variable
+        base_url = os.getenv('BASE_URL', 'https://betterchoices.vote')
+        pdf_content = generate_results_pdf(poll_dict, results_data, base_url=base_url)
         
         filename = f"results_{poll.short_id}.pdf"
         

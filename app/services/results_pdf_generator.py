@@ -130,58 +130,109 @@ def get_winner_color(winner_type):
     }
     return colors_map.get(winner_type, colors.HexColor('#757575'))
 
-def create_head_to_head_bar_chart(cand1_name, cand2_name, cand1_votes, cand2_votes, width=4*inch, height=0.8*inch):
-    """Create a horizontal bar chart for head-to-head comparison."""
+def create_head_to_head_bar_chart(cand1_name, cand2_name, cand1_votes, cand2_votes, is_tie=False, margin=0, width=5.5*inch, height=1.1*inch):
+    """
+    Create a clean, professional head-to-head comparison chart.
+    Vote boxes and bars use EXACT same widths for perfect alignment.
+    """
     from reportlab.graphics.shapes import Drawing, Rect, String
+    from reportlab.lib import colors
     
     drawing = Drawing(width, height)
     
-    # Calculate total and percentages
-    total_votes = cand1_votes + cand2_votes
-    if total_votes == 0:
+    # Calculate percentages - ONLY from voters with opinion
+    total_with_opinion = cand1_votes + cand2_votes
+    if total_with_opinion == 0:
         return drawing
     
-    cand1_pct = (cand1_votes / total_votes) * 100
-    cand2_pct = (cand2_votes / total_votes) * 100
+    cand1_pct = (cand1_votes / total_with_opinion) * 100
+    cand2_pct = (cand2_votes / total_with_opinion) * 100
     
-    # Determine winner for coloring
-    if cand1_votes > cand2_votes:
-        cand1_color = colors.HexColor('#4CAF50')  # Green for winner
-        cand2_color = colors.HexColor('#F44336')  # Red for loser
-    elif cand2_votes > cand1_votes:
-        cand1_color = colors.HexColor('#F44336')  # Red for loser
-        cand2_color = colors.HexColor('#4CAF50')  # Green for winner
+    # Professional muted colors
+    if is_tie:
+        winner_color = colors.HexColor('#9e9e9e')
+        loser_color = colors.HexColor('#9e9e9e')
+        winner_bg = colors.HexColor('#f5f5f5')
+        loser_bg = colors.HexColor('#f5f5f5')
+        winner_text = colors.HexColor('#666666')
+        loser_text = colors.HexColor('#666666')
     else:
-        cand1_color = colors.HexColor('#FFC107')  # Amber for tie
-        cand2_color = colors.HexColor('#FFC107')  # Amber for tie
+        winner_color = colors.HexColor('#66bb6a')  # Muted green
+        loser_color = colors.HexColor('#ef5350')   # Muted red  
+        winner_bg = colors.HexColor('#e8f5e9')     # Light green
+        loser_bg = colors.HexColor('#ffebee')      # Light red
+        winner_text = colors.HexColor('#2e7d32')   # Dark green
+        loser_text = colors.HexColor('#c62828')    # Dark red
     
-    # Bar dimensions
-    bar_height = height * 0.25
-    bar_y_top = height * 0.65
-    bar_y_bottom = height * 0.25
-    
-    # Calculate bar widths
+    # CRITICAL: Calculate widths ONCE and use for both boxes and bars
     cand1_width = (cand1_pct / 100) * width
     cand2_width = (cand2_pct / 100) * width
     
-    # Draw bars
-    # Candidate 1 bar (top)
-    drawing.add(Rect(0, bar_y_top, cand1_width, bar_height, 
-                    fillColor=cand1_color, strokeColor=None))
+    # Layout dimensions
+    vote_box_height = 26
+    vote_box_y = height * 0.58
+    bar_height = 26
+    bar_y = height * 0.28
     
-    # Candidate 2 bar (bottom)
-    drawing.add(Rect(0, bar_y_bottom, cand2_width, bar_height, 
-                    fillColor=cand2_color, strokeColor=None))
+    # === VOTE COUNT BOXES - EXACT SAME WIDTHS AS BARS ===
+    if cand1_width > 0:
+        drawing.add(Rect(0, vote_box_y, cand1_width, vote_box_height,
+                        fillColor=winner_bg, strokeColor=None))
     
-    # Add labels
-    # Candidate names and votes
-    drawing.add(String(5, bar_y_top + bar_height + 5, 
-                      f"{cand1_name}: {cand1_votes:,} votes ({cand1_pct:.1f}%)",
-                      fontSize=9, fontName=get_font_name('normal')))
+    if cand2_width > 0:
+        drawing.add(Rect(cand1_width, vote_box_y, cand2_width, vote_box_height,
+                        fillColor=loser_bg, strokeColor=None))
     
-    drawing.add(String(5, bar_y_bottom - 12, 
-                      f"{cand2_name}: {cand2_votes:,} votes ({cand2_pct:.1f}%)",
-                      fontSize=9, fontName=get_font_name('normal')))
+    # Vote count text - centered in their respective sections
+    drawing.add(String(cand1_width / 2, vote_box_y + vote_box_height / 2 - 3,
+                      f"{cand1_votes:,}",
+                      fontSize=10, fontName=get_font_name('normal', use_bold=True),
+                      fillColor=winner_text,
+                      textAnchor='middle'))
+    
+    drawing.add(String(cand1_width + cand2_width / 2, vote_box_y + vote_box_height / 2 - 3,
+                      f"{cand2_votes:,}",
+                      fontSize=10, fontName=get_font_name('normal', use_bold=True),
+                      fillColor=loser_text,
+                      textAnchor='middle'))
+    
+    # === MAIN BAR - EXACT SAME WIDTHS AS BOXES ===
+    if cand1_width > 0:
+        drawing.add(Rect(0, bar_y, cand1_width, bar_height,
+                        fillColor=winner_color, strokeColor=None))
+        # Percentage inside bar - SMALLER FONT
+        if cand1_pct >= 15:
+            drawing.add(String(cand1_width / 2, bar_y + bar_height / 2 - 3,
+                              f"{round(cand1_pct)}%",
+                              fontSize=10, fontName=get_font_name('normal', use_bold=True),
+                              fillColor=colors.white, textAnchor='middle'))
+    
+    if cand2_width > 0:
+        drawing.add(Rect(cand1_width, bar_y, cand2_width, bar_height,
+                        fillColor=loser_color, strokeColor=None))
+        # Percentage inside bar - SMALLER FONT
+        if cand2_pct >= 15:
+            drawing.add(String(cand1_width + cand2_width / 2, bar_y + bar_height / 2 - 3,
+                              f"{round(cand2_pct)}%",
+                              fontSize=10, fontName=get_font_name('normal', use_bold=True),
+                              fillColor=colors.white, textAnchor='middle'))
+    
+    # === MARGIN TEXT (Below bar) ===
+    if not is_tie and margin > 0:
+        margin_y = bar_y - 12
+        margin_text = f"{cand1_name} wins by a margin of {margin:,}"
+        drawing.add(String(width / 2, margin_y,
+                          margin_text,
+                          fontSize=8, fontName=get_font_name('normal', use_bold=True),
+                          fillColor=colors.HexColor('#2e7d32'),
+                          textAnchor='middle'))
+    elif is_tie:
+        margin_y = bar_y - 12
+        drawing.add(String(width / 2, margin_y,
+                          "Tied",
+                          fontSize=8, fontName=get_font_name('normal', use_bold=True),
+                          fillColor=colors.HexColor('#666'),
+                          textAnchor='middle'))
     
     return drawing
 
@@ -231,13 +282,14 @@ def create_ballot_statistics_visual(stats):
     
     return drawing
 
-def generate_results_pdf(poll: Dict, results: Dict) -> bytes:
+def generate_results_pdf(poll: Dict, results: Dict, base_url: str = None) -> bytes:
     """
     Generate a professional PDF of poll results including winner, head-to-head comparisons, and details.
     
     Args:
         poll: Poll data dictionary
         results: Results data dictionary from the API
+        base_url: Base URL for generating results link (e.g., 'https://betterchoices.vote')
     
     Returns:
         PDF content as bytes
@@ -334,7 +386,9 @@ def generate_results_pdf(poll: Dict, results: Dict) -> bytes:
     story.append(Paragraph("Poll Information", heading_style))
     
     # Generate QR code for results URL
-    results_url = f"{os.getenv('BASE_URL', 'https://betterchoices.vote')}/results/{poll.get('short_id', '')}"
+    if base_url is None:
+        base_url = os.getenv('BASE_URL', 'https://betterchoices.vote')
+    results_url = f"{base_url}/results/{poll.get('short_id', '')}"
     qr_image = None
     
     if QRCODE_AVAILABLE:
@@ -510,51 +564,167 @@ def generate_results_pdf(poll: Dict, results: Dict) -> bytes:
     
     story.append(Spacer(1, 25))
     
-    # HEAD-TO-HEAD COMPARISONS with Visual Bar Charts
+    # HEAD-TO-HEAD COMPARISONS - Professional design matching web interface
     story.append(Paragraph("Head-to-Head Comparisons", heading_style))
+    story.append(Spacer(1, 10))
     
-    if detailed_results:
-        # Sort comparisons for consistent ordering
-        comparisons = sorted(detailed_results.keys())
+    if detailed_results and pairwise_matrix:
+        # Get list of all candidates
+        candidates = list(pairwise_matrix.keys())
         
-        # Create a table with bar charts for each comparison
-        comparison_data = []
+        # Collect all matchups exactly like HeadToHeadTable.jsx
+        all_matchups = []
+        processed_pairs = set()
         
-        for comparison_key in comparisons:
-            comp_data = detailed_results[comparison_key]
+        for candidateA in candidates:
+            for candidateB in candidates:
+                if candidateA != candidateB:
+                    pair_key = '|'.join(sorted([candidateA, candidateB]))
+                    if pair_key not in processed_pairs:
+                        processed_pairs.add(pair_key)
+                        
+                        marginA = pairwise_matrix.get(candidateA, {}).get(candidateB, 0)
+                        marginB = pairwise_matrix.get(candidateB, {}).get(candidateA, 0)
+                        
+                        # Get detailed results for vote counts
+                        detail_key = f"{candidateA}_vs_{candidateB}"
+                        reverse_detail_key = f"{candidateB}_vs_{candidateA}"
+                        
+                        # Extract vote counts
+                        aOverB = 0
+                        bOverA = 0
+                        
+                        if detail_key in detailed_results:
+                            aOverB = detailed_results[detail_key].get(candidateA, 0)
+                            bOverA = detailed_results[detail_key].get(candidateB, 0)
+                        elif reverse_detail_key in detailed_results:
+                            aOverB = detailed_results[reverse_detail_key].get(candidateA, 0)
+                            bOverA = detailed_results[reverse_detail_key].get(candidateB, 0)
+                        
+                        # Determine winner/loser/tie
+                        matchup = {
+                            'candidateA': candidateA,
+                            'candidateB': candidateB,
+                            'aOverB': aOverB,
+                            'bOverA': bOverA,
+                            'winner': None,
+                            'loser': None,
+                            'margin': 0,
+                            'isTie': False
+                        }
+                        
+                        if marginA > 0:
+                            matchup['winner'] = candidateA
+                            matchup['loser'] = candidateB
+                            matchup['margin'] = marginA
+                        elif marginB > 0:
+                            matchup['winner'] = candidateB
+                            matchup['loser'] = candidateA
+                            matchup['margin'] = marginB
+                        else:
+                            # It's a tie
+                            matchup['winner'] = candidateA
+                            matchup['loser'] = candidateB
+                            matchup['isTie'] = True
+                        
+                        all_matchups.append(matchup)
+        
+        # Calculate wins, losses, ties for each candidate BEFORE sorting
+        candidate_stats = {c: {'wins': 0, 'losses': 0, 'ties': 0} for c in candidates}
+        
+        for matchup in all_matchups:
+            if matchup['isTie']:
+                candidate_stats[matchup['winner']]['ties'] += 1
+                candidate_stats[matchup['loser']]['ties'] += 1
+            else:
+                candidate_stats[matchup['winner']]['wins'] += 1
+                candidate_stats[matchup['loser']]['losses'] += 1
+        
+        # Sort matchups exactly like HeadToHeadTable.jsx
+        def sort_matchups(a, b):
+            # Put ties at the end
+            if a['isTie'] and not b['isTie']:
+                return 1
+            if not a['isTie'] and b['isTie']:
+                return -1
             
-            # Extract candidate names from the comparison key
-            parts = comparison_key.replace('_vs_', ' vs ').split(' vs ')
-            if len(parts) == 2:
-                cand1_name = parts[0]
-                cand2_name = parts[1]
+            # For non-ties, sort by winner's total wins
+            if not a['isTie'] and not b['isTie']:
+                aWinnerStats = candidate_stats[a['winner']]
+                bWinnerStats = candidate_stats[b['winner']]
                 
-                # Get vote counts
-                cand1_votes = comp_data.get(cand1_name, 0)
-                cand2_votes = comp_data.get(cand2_name, 0)
+                # Sort by number of wins (descending)
+                if aWinnerStats['wins'] != bWinnerStats['wins']:
+                    return bWinnerStats['wins'] - aWinnerStats['wins']
                 
-                # Create title for this comparison
-                title_text = f"<b>{cand1_name} vs {cand2_name}</b>"
-                title_para = Paragraph(title_text, bold_style)
+                # If same number of wins, sort by winner name alphabetically
+                if a['winner'] != b['winner']:
+                    return -1 if a['winner'] < b['winner'] else 1
                 
-                # Create the bar chart
-                bar_chart = create_head_to_head_bar_chart(
-                    cand1_name, cand2_name, 
-                    cand1_votes, cand2_votes,
-                    width=4.5*inch, height=0.8*inch
-                )
-                
-                # Add to comparison data
-                comparison_data.append([title_para])
-                comparison_data.append([bar_chart])
-                comparison_data.append([Spacer(1, 10)])
+                # Same winner, sort by loser name alphabetically
+                return -1 if a['loser'] < b['loser'] else 1
+            
+            # For ties, sort alphabetically by first candidate then second
+            if a['isTie'] and b['isTie']:
+                if a['winner'] != b['winner']:
+                    return -1 if a['winner'] < b['winner'] else 1
+                return -1 if a['loser'] < b['loser'] else 1
+            
+            return 0
         
-        if comparison_data:
+        from functools import cmp_to_key
+        all_matchups.sort(key=cmp_to_key(sort_matchups))
+        
+        # Create comparison visuals with professional design
+        comparison_elements = []
+        
+        for matchup in all_matchups:
+            # Create title - show matchup
+            if matchup['isTie']:
+                # For ties, show in alphabetical order
+                first_cand = matchup['candidateA'] if matchup['candidateA'] < matchup['candidateB'] else matchup['candidateB']
+                second_cand = matchup['candidateB'] if matchup['candidateA'] < matchup['candidateB'] else matchup['candidateA']
+                first_votes = matchup['aOverB'] if matchup['candidateA'] < matchup['candidateB'] else matchup['bOverA']
+                second_votes = matchup['bOverA'] if matchup['candidateA'] < matchup['candidateB'] else matchup['aOverB']
+                margin = 0
+            else:
+                # Winner on top
+                first_cand = matchup['winner']
+                second_cand = matchup['loser']
+                first_votes = matchup['aOverB'] if matchup['winner'] == matchup['candidateA'] else matchup['bOverA']
+                second_votes = matchup['bOverA'] if matchup['winner'] == matchup['candidateA'] else matchup['aOverB']
+                margin = matchup['margin']
+            
+            # Simple bold title - flush left, no background
+            title_text = f"<b>{first_cand} vs {second_cand}</b>"
+            title_para = Paragraph(
+                title_text,
+                ParagraphStyle('ComparisonTitle', parent=bold_style,
+                             fontSize=11,
+                             alignment=TA_LEFT,
+                             spaceAfter=8)
+            )
+            
+            # Create the clean, aligned bar chart
+            bar_chart = create_head_to_head_bar_chart(
+                first_cand, second_cand,
+                first_votes, second_votes,
+                is_tie=matchup['isTie'],
+                margin=margin,
+                width=5.5*inch, height=1.1*inch
+            )
+            
+            comparison_elements.append([title_para])
+            comparison_elements.append([Spacer(1, 4)])
+            comparison_elements.append([bar_chart])
+            comparison_elements.append([Spacer(1, 18)])
+        
+        if comparison_elements:
             # Remove the last spacer
-            if len(comparison_data) > 0 and isinstance(comparison_data[-1][0], Spacer):
-                comparison_data.pop()
+            if len(comparison_elements) > 0 and isinstance(comparison_elements[-1][0], Spacer):
+                comparison_elements.pop()
             
-            comparison_table = Table(comparison_data, colWidths=[6*inch])
+            comparison_table = Table(comparison_elements, colWidths=[6*inch])
             comparison_table.setStyle(TableStyle([
                 ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
                 ('VALIGN', (0, 0), (-1, -1), 'TOP'),
@@ -591,11 +761,11 @@ def generate_results_pdf(poll: Dict, results: Dict) -> bytes:
                                            fontSize=9, textColor=colors.HexColor('#666666'))))
         story.append(Spacer(1, 10))
         
-        # Statistics table with percentages - matching the exact field names!
+        # Statistics table with percentages - only show non-zero statistics
         stats_data = []
         
         # Ranked (almost) all candidates
-        if 'ranked_almost_all' in stats:
+        if 'ranked_almost_all' in stats and stats['ranked_almost_all'] > 0:
             stats_data.append([
                 "Ranked (almost) all candidates",
                 f"{stats['ranked_almost_all']}%",
@@ -603,23 +773,23 @@ def generate_results_pdf(poll: Dict, results: Dict) -> bytes:
             ])
         
         # Submitted a partial ranking
-        if 'partial_ranking' in stats:
+        if 'partial_ranking' in stats and stats['partial_ranking'] > 0:
             stats_data.append([
                 "Submitted a partial ranking",
                 f"{stats['partial_ranking']}%",
-                "Left at least 2 candidates unranked"
+                "Ranked 2+ candidates but not all"
             ])
         
         # Ballots had gaps
-        if 'had_gaps' in stats:
+        if 'had_gaps' in stats and stats['had_gaps'] > 0:
             stats_data.append([
                 "Ballots had gaps",
                 f"{stats['had_gaps']}%",
-                "Skipped ranks in sequence"
+                "Skipped rank numbers (e.g., 1, 3, 5)"
             ])
         
         # Bullet vote
-        if 'single_choice_only' in stats:
+        if 'single_choice_only' in stats and stats['single_choice_only'] > 0:
             stats_data.append([
                 "Bullet vote",
                 f"{stats['single_choice_only']}%",
@@ -646,39 +816,75 @@ def generate_results_pdf(poll: Dict, results: Dict) -> bytes:
         
         story.append(Spacer(1, 10))
         
-        # Note about overlapping
-        story.append(Paragraph(
-            "<i>Note: Categories can overlap (e.g., a ballot can be both partial and have gaps)</i>",
-            ParagraphStyle('Note', parent=normal_style, fontSize=8, 
-                         textColor=colors.HexColor('#666666'), alignment=TA_CENTER)
-        ))
+        # Note about gaps - only show if gaps exist
+        if stats.get('had_gaps', 0) > 0:
+            story.append(Paragraph(
+                "<i>Note: Gaps can occur with any number of ranked candidates</i>",
+                ParagraphStyle('Note', parent=normal_style, fontSize=8, 
+                             textColor=colors.HexColor('#666666'), alignment=TA_CENTER)
+            ))
     
-    # Footer
-    story.append(Spacer(1, 40))
+    # Build the PDF with custom footer
+    def add_footer(canvas, doc):
+        """Add footer to each page with clickable links."""
+        canvas.saveState()
+        
+        # Footer position
+        footer_y = 50
+        page_width = doc.pagesize[0]
+        
+        # Footer text styles
+        footer_font = 'Helvetica'
+        footer_size = 8
+        
+        # Line 1: Generated from app
+        canvas.setFont(footer_font, footer_size)
+        canvas.setFillColorRGB(0.4, 0.4, 0.4)  # Grey color
+        line1 = "This results report is generated from BetterChoices voting platform."
+        canvas.drawCentredString(page_width / 2, footer_y + 24, line1)
+        
+        # Line 2: Powered by with links
+        canvas.setFont(footer_font, footer_size)
+        line2_text = "Powered by BetterChoices - Better Democracy Through Better Voting"
+        canvas.drawCentredString(page_width / 2, footer_y + 12, line2_text)
+        
+        # Line 3: Links - centered together
+        canvas.setFont(footer_font, footer_size)
+        link_text_1 = "app.betterchoices.vote"
+        link_text_2 = "betterchoices.vote"
+        separator = " | "
+        
+        # Calculate total width for centering
+        link1_width = canvas.stringWidth(link_text_1, footer_font, footer_size)
+        sep_width = canvas.stringWidth(separator, footer_font, footer_size)
+        link2_width = canvas.stringWidth(link_text_2, footer_font, footer_size)
+        total_width = link1_width + sep_width + link2_width
+        
+        # Starting x position to center everything
+        start_x = (page_width - total_width) / 2
+        
+        # Draw first link
+        canvas.setFillColorRGB(0, 0.4, 0.8)  # Blue color for links
+        canvas.drawString(start_x, footer_y, link_text_1)
+        canvas.linkURL("https://app.betterchoices.vote", 
+                      (start_x, footer_y - 2, start_x + link1_width, footer_y + footer_size + 2),
+                      relative=0)
+        
+        # Draw separator
+        canvas.setFillColorRGB(0.4, 0.4, 0.4)  # Grey
+        canvas.drawString(start_x + link1_width, footer_y, separator)
+        
+        # Draw second link
+        canvas.setFillColorRGB(0, 0.4, 0.8)  # Blue color for links
+        canvas.drawString(start_x + link1_width + sep_width, footer_y, link_text_2)
+        canvas.linkURL("https://betterchoices.vote",
+                      (start_x + link1_width + sep_width, footer_y - 2, 
+                       start_x + link1_width + sep_width + link2_width, footer_y + footer_size + 2),
+                      relative=0)
+        
+        canvas.restoreState()
     
-    footer_style = ParagraphStyle(
-        'Footer',
-        parent=styles['Normal'],
-        fontSize=8,
-        textColor=colors.grey,
-        alignment=TA_CENTER,
-        fontName='Helvetica'
-    )
-    
-    story.append(Paragraph(
-        "This results report is generated from BetterChoices voting platform.",
-        footer_style
-    ))
-    story.append(Paragraph(
-        "Powered by BetterChoices - Better Democracy Through Better Voting",
-        ParagraphStyle('FooterBold', parent=footer_style, fontName='Helvetica-Bold')
-    ))
-    story.append(Paragraph("betterchoices.vote", 
-                          ParagraphStyle('Website', parent=footer_style, 
-                                       textColor=colors.HexColor('#0066CC'))))
-    
-    # Build the PDF
-    doc.build(story)
+    doc.build(story, onFirstPage=add_footer, onLaterPages=add_footer)
     
     # Get the PDF content
     pdf_content = buffer.getvalue()
