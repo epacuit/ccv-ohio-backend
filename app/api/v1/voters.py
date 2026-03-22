@@ -664,7 +664,7 @@ async def check_existing_ballot(
             "ballot": {
                 "id": str(ballot.id),
                 "submitted_at": ballot.submitted_at.isoformat() if ballot.submitted_at else None,
-                "rankings": ballot.rankings,
+                "pairwise_choices": ballot.pairwise_choices,
                 "write_ins": ballot.write_ins if hasattr(ballot, 'write_ins') else []
             }
         }

@@ -1,16 +1,18 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, func
 from typing import List, Optional
 import os
 import hashlib
 from datetime import datetime, timedelta
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
-# Use the same imports as your polls.py
 from app.db import get_db
 from app.models import Poll, Ballot
 
 router = APIRouter()
+limiter = Limiter(key_func=get_remote_address)
 
 def verify_super_admin(password: str) -> bool:
     """Verify super admin password"""
@@ -24,7 +26,9 @@ def verify_super_admin(password: str) -> bool:
     return provided_hash == SUPER_ADMIN_PASSWORD_HASH
 
 @router.get("/admin/all-polls")
+@limiter.limit("5/minute")
 async def get_all_polls(
+    request: Request,
     password: str = Query(..., description="Super admin password"),
     limit: int = Query(100, le=500),
     offset: int = Query(0),
@@ -154,7 +158,9 @@ async def delete_poll_super_admin(
     return {"message": f"Poll '{poll.title}' deleted successfully"}
 
 @router.get("/admin/stats")
+@limiter.limit("5/minute")
 async def get_admin_stats(
+    request: Request,
     password: str = Query(..., description="Super admin password"),
     db: AsyncSession = Depends(get_db)
 ):

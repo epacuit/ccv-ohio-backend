@@ -1,5 +1,9 @@
 # app/api/v1/polls.py - FINAL VERSION WITH WRITE-IN SUPPORT
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
+limiter = Limiter(key_func=get_remote_address)
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, delete, func
 from typing import Dict, Any, List, Optional
@@ -82,7 +86,9 @@ def ensure_candidates_have_ids(candidates: List[Any]) -> List[Dict[str, Any]]:
     return processed_candidates
 
 @router.post("/")
+@limiter.limit("10/minute")
 async def create_poll(
+    request: Request,
     poll_data: Dict[str, Any],
     db: AsyncSession = Depends(get_db)
 ):
@@ -265,11 +271,6 @@ async def get_poll(
     if not poll:
         raise HTTPException(status_code=404, detail="Poll not found")
     
-    # Calculate effective num_ranks
-    num_ranks = poll.settings.get('num_ranks') if poll.settings else None
-    if num_ranks is None:
-        num_ranks = len(poll.candidates)
-    
     # Return poll - candidates already have IDs from creation
     return {
         "id": str(poll.id),
@@ -279,7 +280,6 @@ async def get_poll(
         "description": poll.description,
         "candidates": poll.candidates,  # Has IDs from creation
         "settings": poll.settings,
-        "num_ranks": num_ranks,  # Include num_ranks for frontend
         "status": get_poll_status(poll),
         "is_private": poll.is_private,
         "created_at": poll.created_at.isoformat() if poll.created_at else None,
@@ -698,56 +698,67 @@ async def export_poll_csv(
     if not ballots:
         raise HTTPException(status_code=400, detail="No ballots to export")
     
-    # Build candidate lookup including write-ins
-    all_candidates = list(poll.candidates)
-    candidate_ids = [c['id'] for c in poll.candidates if isinstance(c, dict)]
-    candidate_names = {c['id']: c['name'] for c in poll.candidates if isinstance(c, dict)}
-    
-    # Add write-ins from ballots
-    for ballot in ballots:
-        if ballot.write_ins:
-            for write_in in ballot.write_ins:
-                if isinstance(write_in, dict):
-                    wid = write_in.get('id')
-                    wname = write_in.get('name')
-                    if wid and wid not in candidate_ids:
-                        candidate_ids.append(wid)
-                        candidate_names[wid] = f"{wname} (write-in)"
-    
-    # Build CSV
+    # Build pairwise CSV (matches bulk-import format)
     import csv
     from io import StringIO
-    
+
+    candidates = poll.candidates or []
+    cand_name_by_id = {}
+    for c in candidates:
+        if isinstance(c, dict):
+            cand_name_by_id[c.get('id', '')] = c.get('name', 'Unknown')
+
+    # Generate matchup columns (N choose 2)
+    matchup_columns = []
+    for i in range(len(candidates)):
+        for j in range(i + 1, len(candidates)):
+            c1 = candidates[i]
+            c2 = candidates[j]
+            c1_id = c1.get('id', '') if isinstance(c1, dict) else str(i)
+            c2_id = c2.get('id', '') if isinstance(c2, dict) else str(j)
+            c1_name = c1.get('name', f'Candidate {i}') if isinstance(c1, dict) else str(c1)
+            c2_name = c2.get('name', f'Candidate {j}') if isinstance(c2, dict) else str(c2)
+            matchup_columns.append({
+                'header': f'{c1_name} vs {c2_name}',
+                'cand1_id': c1_id,
+                'cand2_id': c2_id,
+                'cand1_name': c1_name,
+                'cand2_name': c2_name,
+            })
+
     output = StringIO()
     writer = csv.writer(output)
-    
+
     # Header row
-    header = ["count"] + [candidate_names.get(cid, cid) for cid in candidate_ids]
-    writer.writerow(header)
-    
-    # Aggregate identical ballots
+    writer.writerow(['Count'] + [m['header'] for m in matchup_columns])
+
+    # Aggregate identical ballot patterns
     from collections import defaultdict
-    ranking_patterns = defaultdict(int)
-    
+    ballot_patterns = defaultdict(int)
+
     for ballot in ballots:
-        # Create a pattern key
+        choice_lookup = {}
+        for choice in (ballot.pairwise_choices or []):
+            key = (choice.get('cand1_id', ''), choice.get('cand2_id', ''))
+            choice_lookup[key] = choice.get('choice', '')
+
         pattern = []
-        for cid in candidate_ids:
-            # Find rank for this candidate
-            rank = None
-            for r in ballot.rankings:
-                if r.get('candidate_id') == cid:
-                    rank = r.get('rank')
-                    break
-            pattern.append(rank if rank else "")
-        
-        pattern_key = tuple(pattern)
-        ranking_patterns[pattern_key] += ballot.count
-    
+        for m in matchup_columns:
+            choice_val = choice_lookup.get((m['cand1_id'], m['cand2_id']), '')
+            if choice_val == 'cand1':
+                pattern.append(m['cand1_name'])
+            elif choice_val == 'cand2':
+                pattern.append(m['cand2_name'])
+            elif choice_val == 'tie':
+                pattern.append('both')
+            else:
+                pattern.append('')
+
+        ballot_patterns[tuple(pattern)] += ballot.count
+
     # Write data rows
-    for pattern, count in ranking_patterns.items():
-        row = [count] + list(pattern)
-        writer.writerow(row)
+    for pattern, count in ballot_patterns.items():
+        writer.writerow([count] + list(pattern))
     
     # Return as CSV file
     csv_content = output.getvalue()

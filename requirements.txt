@@ -237,3 +237,4 @@ websockets==15.0.1
     # via uvicorn
 wrapt==1.17.3
     # via deprecated
+slowapi==0.1.9

@@ -132,61 +132,63 @@ async def download_ballots_csv(
     if not ballots:
         raise HTTPException(status_code=400, detail="No ballots found")
     
-    # Build CSV
+    # Build CSV in pairwise format (matches bulk-import format)
     output = StringIO()
-    
-    # Get candidate names
-    candidate_names = ['count']  # First column is always count
-    candidate_ids = []
-    
-    for candidate in poll.candidates:
-        if isinstance(candidate, dict):
-            name = candidate.get('name', f'Candidate {len(candidate_names)}')
-            cid = candidate.get('id', f'candidate-{len(candidate_ids)}')
-        else:
-            name = str(candidate)
-            cid = f'candidate-{len(candidate_ids)}'
-        candidate_names.append(name)
-        candidate_ids.append(cid)
-    
-    # Check for write-ins across all ballots
-    all_write_ins = {}
-    for ballot in ballots:
-        if ballot.write_ins:
-            for write_in in ballot.write_ins:
-                wid = write_in.get('id')
-                wname = write_in.get('name')
-                if wid and wname and wid not in all_write_ins:
-                    all_write_ins[wid] = wname
-    
-    # Add write-ins to header
-    for wid, wname in all_write_ins.items():
-        candidate_names.append(f"{wname} (write-in)")
-        candidate_ids.append(wid)
-    
+
+    # Build candidate lookup
+    candidates = poll.candidates or []
+    cand_name_by_id = {}
+    for c in candidates:
+        if isinstance(c, dict):
+            cand_name_by_id[c.get('id', '')] = c.get('name', 'Unknown')
+
+    # Generate matchup columns (N choose 2)
+    matchup_columns = []
+    for i in range(len(candidates)):
+        for j in range(i + 1, len(candidates)):
+            c1 = candidates[i]
+            c2 = candidates[j]
+            c1_id = c1.get('id', '') if isinstance(c1, dict) else str(i)
+            c2_id = c2.get('id', '') if isinstance(c2, dict) else str(j)
+            c1_name = c1.get('name', f'Candidate {i}') if isinstance(c1, dict) else str(c1)
+            c2_name = c2.get('name', f'Candidate {j}') if isinstance(c2, dict) else str(c2)
+            matchup_columns.append({
+                'header': f'{c1_name} vs {c2_name}',
+                'cand1_id': c1_id,
+                'cand2_id': c2_id,
+                'cand1_name': c1_name,
+                'cand2_name': c2_name,
+            })
+
     # Write CSV
     writer = csv.writer(output)
-    
+
     # Header row
-    writer.writerow(candidate_names)
-    
+    writer.writerow(['Count'] + [m['header'] for m in matchup_columns])
+
     # Process each ballot
     for ballot in ballots:
-        row = [ballot.count]  # Start with count
-        
-        # Build rank lookup for this ballot
-        rank_lookup = {}
-        for ranking in ballot.rankings:
-            cid = ranking.get('candidate_id')
-            rank = ranking.get('rank')
-            if cid and rank is not None:
-                rank_lookup[str(cid)] = rank
-        
-        # Add rank for each candidate
-        for cid in candidate_ids:
-            rank = rank_lookup.get(str(cid), '')  # Empty if not ranked
-            row.append(rank)
-        
+        row = [ballot.count]
+
+        # Build choice lookup for this ballot
+        choice_lookup = {}
+        for choice in (ballot.pairwise_choices or []):
+            key = (choice.get('cand1_id', ''), choice.get('cand2_id', ''))
+            choice_lookup[key] = choice.get('choice', '')
+
+        # Add cell for each matchup
+        for m in matchup_columns:
+            choice_val = choice_lookup.get((m['cand1_id'], m['cand2_id']), '')
+
+            if choice_val == 'cand1':
+                row.append(m['cand1_name'])
+            elif choice_val == 'cand2':
+                row.append(m['cand2_name'])
+            elif choice_val == 'tie':
+                row.append('both')
+            else:
+                row.append('')  # neither or missing
+
         writer.writerow(row)
     
     # Get CSV content

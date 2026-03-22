@@ -1,15 +1,16 @@
 # app/schemas/ballot.py
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from typing import List, Optional
 from uuid import UUID
 
-class RankingItem(BaseModel):
-    candidate_id: str
-    rank: int = Field(..., ge=1)
+class PairwiseChoice(BaseModel):
+    cand1_id: str
+    cand2_id: str
+    choice: str  # "cand1", "cand2", or "tie"
 
 class BallotSubmit(BaseModel):
     poll_id: UUID
-    rankings: List[RankingItem]
+    pairwise_choices: List[PairwiseChoice]
     voter_fingerprint: Optional[str] = None
     voter_token: Optional[str] = None
 

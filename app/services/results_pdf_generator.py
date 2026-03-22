@@ -185,13 +185,13 @@ def create_head_to_head_bar_chart(cand1_name, cand2_name, cand1_votes, cand2_vot
     
     # Vote count text - centered in their respective sections
     drawing.add(String(cand1_width / 2, vote_box_y + vote_box_height / 2 - 3,
-                      f"{cand1_votes:,}",
+                      f"{int(cand1_votes):,}",
                       fontSize=10, fontName=get_font_name('normal', use_bold=True),
                       fillColor=winner_text,
                       textAnchor='middle'))
-    
+
     drawing.add(String(cand1_width + cand2_width / 2, vote_box_y + vote_box_height / 2 - 3,
-                      f"{cand2_votes:,}",
+                      f"{int(cand2_votes):,}",
                       fontSize=10, fontName=get_font_name('normal', use_bold=True),
                       fillColor=loser_text,
                       textAnchor='middle'))
@@ -220,7 +220,7 @@ def create_head_to_head_bar_chart(cand1_name, cand2_name, cand1_votes, cand2_vot
     # === MARGIN TEXT (Below bar) ===
     if not is_tie and margin > 0:
         margin_y = bar_y - 12
-        margin_text = f"{cand1_name} wins by a margin of {margin:,}"
+        margin_text = f"{cand1_name} wins by a margin of {int(margin):,}"
         drawing.add(String(width / 2, margin_y,
                           margin_text,
                           fontSize=8, fontName=get_font_name('normal', use_bold=True),
@@ -245,12 +245,11 @@ def create_ballot_statistics_visual(stats):
     height = 2.5*inch  # Reduced height
     drawing = Drawing(width, height)
     
-    # Statistics to display - MUST match field names from backend!
+    # Statistics to display - pairwise comparison stats
     stat_items = [
-        ("Ranked (almost) all candidates", stats.get('ranked_almost_all', 0), colors.HexColor('#4CAF50')),
-        ("Submitted a partial ranking", stats.get('partial_ranking', 0), colors.HexColor('#2196F3')),
-        ("Ballots had gaps", stats.get('had_gaps', 0), colors.HexColor('#FF9800')),
-        ("Bullet vote", stats.get('single_choice_only', 0), colors.HexColor('#9E9E9E'))
+        ("Completed all matchups", stats.get('completed_all_matchups', 0), colors.HexColor('#4CAF50')),
+        ("Partial ballot", stats.get('partial_ballot', 0), colors.HexColor('#2196F3')),
+        ("Selected both (no preference)", stats.get('has_ties', 0), colors.HexColor('#FF9800')),
     ]
     
     # Layout parameters - FIXED positioning
@@ -289,7 +288,7 @@ def generate_results_pdf(poll: Dict, results: Dict, base_url: str = None) -> byt
     Args:
         poll: Poll data dictionary
         results: Results data dictionary from the API
-        base_url: Base URL for generating results link (e.g., 'https://betterchoices.vote')
+        base_url: Base URL for generating results link (e.g., 'https://betterchoicesohio.org')
     
     Returns:
         PDF content as bytes
@@ -304,51 +303,57 @@ def generate_results_pdf(poll: Dict, results: Dict, base_url: str = None) -> byt
     # Create a BytesIO buffer
     buffer = BytesIO()
     
-    # Create the PDF
+    # Create the PDF with clean margins
     doc = SimpleDocTemplate(
         buffer,
         pagesize=A4,
-        rightMargin=72,
-        leftMargin=72,
+        rightMargin=60,
+        leftMargin=60,
         topMargin=50,
-        bottomMargin=72
+        bottomMargin=70
     )
-    
+
+    # Page width for content
+    page_content_width = A4[0] - 120  # 60 left + 60 right
+
     # Get styles
     styles = getSampleStyleSheet()
-    
-    # Custom styles
+
+    # Custom styles — all left-aligned
     title_style = ParagraphStyle(
         'Title',
         parent=styles['Heading1'],
-        fontSize=24,
+        fontSize=22,
         textColor=colors.black,
-        spaceAfter=25,
-        alignment=TA_CENTER,
+        spaceAfter=20,
+        alignment=TA_LEFT,
         fontName=get_font_name('heading')
     )
-    
+
     heading_style = ParagraphStyle(
         'Heading',
         parent=styles['Heading2'],
-        fontSize=16,
+        fontSize=14,
         textColor=colors.HexColor('#2C3E50'),
-        spaceAfter=12,
-        spaceBefore=20,
+        spaceAfter=10,
+        spaceBefore=16,
+        alignment=TA_LEFT,
         fontName=get_font_name('heading')
     )
-    
+
     normal_style = ParagraphStyle(
         'Normal',
         parent=styles['Normal'],
         fontSize=10,
+        alignment=TA_LEFT,
         fontName=get_font_name('normal')
     )
-    
+
     bold_style = ParagraphStyle(
         'Bold',
         parent=styles['Normal'],
         fontSize=10,
+        alignment=TA_LEFT,
         fontName=get_font_name('normal', use_bold=True)
     )
     
@@ -374,7 +379,7 @@ def generate_results_pdf(poll: Dict, results: Dict, base_url: str = None) -> byt
             print(f"Failed to load logo: {e}")
     
     if not logo_added:
-        story.append(Paragraph("BetterChoices - Better Democracy Through Better Voting", 
+        story.append(Paragraph("Better Choices for Ohio",
                               ParagraphStyle('LogoText', parent=heading_style, fontSize=14)))
     
     story.append(Spacer(1, 20))
@@ -387,7 +392,7 @@ def generate_results_pdf(poll: Dict, results: Dict, base_url: str = None) -> byt
     
     # Generate QR code for results URL
     if base_url is None:
-        base_url = os.getenv('BASE_URL', 'https://betterchoices.vote')
+        base_url = os.getenv('BASE_URL', 'https://betterchoicesohio.org')
     results_url = f"{base_url}/results/{poll.get('short_id', '')}"
     qr_image = None
     
@@ -407,7 +412,7 @@ def generate_results_pdf(poll: Dict, results: Dict, base_url: str = None) -> byt
             qr_buffer = BytesIO()
             qr_img.save(qr_buffer, format='PNG')
             qr_buffer.seek(0)
-            qr_image = Image(qr_buffer, width=1.5*inch, height=1.5*inch)
+            qr_image = Image(qr_buffer, width=1*inch, height=1*inch)
         except Exception as e:
             print(f"QR code generation failed: {e}")
     
@@ -425,7 +430,7 @@ def generate_results_pdf(poll: Dict, results: Dict, base_url: str = None) -> byt
     ]
     
     # Create the basic info table
-    poll_info_table = Table(poll_info_basic, colWidths=[1.5*inch, 3.8*inch])
+    poll_info_table = Table(poll_info_basic, colWidths=[1.5*inch, 4*inch])
     poll_info_table.setStyle(TableStyle([
         ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
         ('VALIGN', (0, 0), (-1, -1), 'TOP'),
@@ -439,7 +444,7 @@ def generate_results_pdf(poll: Dict, results: Dict, base_url: str = None) -> byt
     if qr_image:
         # Create a table with info on left and QR on right
         container_data = [[poll_info_table, qr_image]]
-        container_table = Table(container_data, colWidths=[5.5*inch, 1.5*inch])
+        container_table = Table(container_data, colWidths=[page_content_width - 2*inch, 2*inch])
         container_table.setStyle(TableStyle([
             ('ALIGN', (0, 0), (0, 0), 'LEFT'),
             ('ALIGN', (1, 0), (1, 0), 'RIGHT'),
@@ -449,13 +454,13 @@ def generate_results_pdf(poll: Dict, results: Dict, base_url: str = None) -> byt
     else:
         story.append(poll_info_table)
     
-    # Add description separately below the QR code section
+    # Description — flush left
     if poll.get('description'):
         story.append(Spacer(1, 10))
-        # Convert markdown to HTML for ReportLab
+        story.append(Paragraph("<b>Description</b>", bold_style))
+        story.append(Spacer(1, 4))
         desc_html = convert_markdown_to_reportlab_html(poll['description'])
-        desc_para = Paragraph(f"<b>Description:</b> {desc_html}", normal_style)
-        story.append(desc_para)
+        story.append(Paragraph(desc_html, normal_style))
     
     story.append(Spacer(1, 25))
     
@@ -475,28 +480,30 @@ def generate_results_pdf(poll: Dict, results: Dict, base_url: str = None) -> byt
     else:
         winner_text = "<b>No Clear Winner</b>"
     
+    winner_name = results.get('winner', '')
     winner_explanation = {
-        'condorcet': 'Beats every other candidate head-to-head',
-        'most_wins': 'Has the best win-loss record',
-        'smallest_loss': 'Has the smallest loss among all candidates with the most wins',
+        'condorcet': 'Wins all of their head-to-head matchups',
+        'most_wins': 'Has no head-to-head losses',
+        'smallest_loss': f'Every candidate loses to one candidate. {winner_name} has the smallest loss.',
         'tie': 'There is a tie in the head-to-head comparisons'
     }.get(winner_type, '')
     
     winner_para = Paragraph(
         f"{winner_text}<br/><br/><i>{winner_explanation}</i>",
-        ParagraphStyle('Winner', parent=normal_style, 
-                      textColor=winner_color, 
-                      fontSize=14,
-                      alignment=TA_CENTER,
-                      spaceAfter=20)
+        ParagraphStyle('Winner', parent=normal_style,
+                      textColor=winner_color,
+                      fontSize=13,
+                      alignment=TA_LEFT,
+                      spaceAfter=16)
     )
-    
-    winner_table = Table([[winner_para]], colWidths=[6*inch])
+
+    winner_table = Table([[winner_para]], colWidths=[page_content_width])
     winner_table.setStyle(TableStyle([
-        ('BOX', (0, 0), (-1, -1), 2, winner_color),
-        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#F5F5F5')),
-        ('TOPPADDING', (0, 0), (-1, -1), 15),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 15),
+        ('BOX', (0, 0), (-1, -1), 1.5, winner_color),
+        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#FAFAFA')),
+        ('TOPPADDING', (0, 0), (-1, -1), 12),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
+        ('LEFTPADDING', (0, 0), (-1, -1), 12),
     ]))
     
     story.append(winner_table)
@@ -562,9 +569,10 @@ def generate_results_pdf(poll: Dict, results: Dict, base_url: str = None) -> byt
         
         story.append(standings_table)
     
-    story.append(Spacer(1, 25))
-    
-    # HEAD-TO-HEAD COMPARISONS - Professional design matching web interface
+    # Page break before head-to-head comparisons
+    story.append(PageBreak())
+
+    # HEAD-TO-HEAD COMPARISONS
     story.append(Paragraph("Head-to-Head Comparisons", heading_style))
     story.append(Spacer(1, 10))
     
@@ -711,7 +719,7 @@ def generate_results_pdf(poll: Dict, results: Dict, base_url: str = None) -> byt
                 first_votes, second_votes,
                 is_tie=matchup['isTie'],
                 margin=margin,
-                width=5.5*inch, height=1.1*inch
+                width=page_content_width - 10, height=1*inch
             )
             
             comparison_elements.append([title_para])
@@ -724,7 +732,7 @@ def generate_results_pdf(poll: Dict, results: Dict, base_url: str = None) -> byt
             if len(comparison_elements) > 0 and isinstance(comparison_elements[-1][0], Spacer):
                 comparison_elements.pop()
             
-            comparison_table = Table(comparison_elements, colWidths=[6*inch])
+            comparison_table = Table(comparison_elements, colWidths=[page_content_width])
             comparison_table.setStyle(TableStyle([
                 ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
                 ('VALIGN', (0, 0), (-1, -1), 'TOP'),
@@ -733,96 +741,7 @@ def generate_results_pdf(poll: Dict, results: Dict, base_url: str = None) -> byt
             ]))
             story.append(comparison_table)
     
-    story.append(Spacer(1, 25))
-    
-    # BALLOT STATISTICS - matching online display exactly
-    if results.get('statistics'):
-        story.append(Paragraph("Ballot Statistics", heading_style))
-        
-        stats = results['statistics']
-        
-        # Add Total Voters prominently
-        total_voters_data = [
-            ["Total Voters:", f"{stats.get('total_votes', 0):,}"]
-        ]
-        total_voters_table = Table(total_voters_data, colWidths=[1.5*inch, 2*inch])
-        total_voters_table.setStyle(TableStyle([
-            ('FONTNAME', (0, 0), (0, 0), get_font_name('normal', use_bold=True)),
-            ('FONTNAME', (1, 0), (1, 0), get_font_name('normal', use_bold=True)),
-            ('FONTSIZE', (0, 0), (-1, -1), 12),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
-        ]))
-        story.append(total_voters_table)
-        story.append(Spacer(1, 15))
-        
-        # Voting Patterns heading
-        story.append(Paragraph("VOTING PATTERNS", 
-                              ParagraphStyle('PatternTitle', parent=normal_style, 
-                                           fontSize=9, textColor=colors.HexColor('#666666'))))
-        story.append(Spacer(1, 10))
-        
-        # Statistics table with percentages - only show non-zero statistics
-        stats_data = []
-        
-        # Ranked (almost) all candidates
-        if 'ranked_almost_all' in stats and stats['ranked_almost_all'] > 0:
-            stats_data.append([
-                "Ranked (almost) all candidates",
-                f"{stats['ranked_almost_all']}%",
-                "All except possibly 1 candidate"
-            ])
-        
-        # Submitted a partial ranking
-        if 'partial_ranking' in stats and stats['partial_ranking'] > 0:
-            stats_data.append([
-                "Submitted a partial ranking",
-                f"{stats['partial_ranking']}%",
-                "Ranked 2+ candidates but not all"
-            ])
-        
-        # Ballots had gaps
-        if 'had_gaps' in stats and stats['had_gaps'] > 0:
-            stats_data.append([
-                "Ballots had gaps",
-                f"{stats['had_gaps']}%",
-                "Skipped rank numbers (e.g., 1, 3, 5)"
-            ])
-        
-        # Bullet vote
-        if 'single_choice_only' in stats and stats['single_choice_only'] > 0:
-            stats_data.append([
-                "Bullet vote",
-                f"{stats['single_choice_only']}%",
-                "Ranked only first choice"
-            ])
-        
-        if stats_data:
-            stats_table = Table(stats_data, colWidths=[2.6*inch, 0.8*inch, 3*inch])
-            stats_table.setStyle(TableStyle([
-                ('FONTNAME', (0, 0), (0, -1), get_font_name('normal', use_bold=True)),
-                ('FONTNAME', (1, 0), (1, -1), get_font_name('normal', use_bold=True)),
-                ('FONTNAME', (2, 0), (2, -1), get_font_name('normal')),
-                ('FONTSIZE', (0, 0), (-1, -1), 10),
-                ('ALIGN', (1, 0), (1, -1), 'CENTER'),
-                ('TEXTCOLOR', (1, 0), (1, -1), colors.HexColor('#2196F3')),
-                ('TEXTCOLOR', (2, 0), (2, -1), colors.HexColor('#666666')),
-                ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#F9F9F9')),
-                ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#E0E0E0')),
-                ('TOPPADDING', (0, 0), (-1, -1), 8),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
-                ('LEFTPADDING', (0, 0), (-1, -1), 10),
-            ]))
-            story.append(stats_table)
-        
-        story.append(Spacer(1, 10))
-        
-        # Note about gaps - only show if gaps exist
-        if stats.get('had_gaps', 0) > 0:
-            story.append(Paragraph(
-                "<i>Note: Gaps can occur with any number of ranked candidates</i>",
-                ParagraphStyle('Note', parent=normal_style, fontSize=8, 
-                             textColor=colors.HexColor('#666666'), alignment=TA_CENTER)
-            ))
+    story.append(Spacer(1, 20))
     
     # Build the PDF with custom footer
     def add_footer(canvas, doc):
@@ -837,49 +756,19 @@ def generate_results_pdf(poll: Dict, results: Dict, base_url: str = None) -> byt
         footer_font = 'Helvetica'
         footer_size = 8
         
-        # Line 1: Generated from app
+        # Line 1
         canvas.setFont(footer_font, footer_size)
-        canvas.setFillColorRGB(0.4, 0.4, 0.4)  # Grey color
-        line1 = "This results report is generated from BetterChoices voting platform."
-        canvas.drawCentredString(page_width / 2, footer_y + 24, line1)
-        
-        # Line 2: Powered by with links
-        canvas.setFont(footer_font, footer_size)
-        line2_text = "Powered by BetterChoices - Better Democracy Through Better Voting"
-        canvas.drawCentredString(page_width / 2, footer_y + 12, line2_text)
-        
-        # Line 3: Links - centered together
-        canvas.setFont(footer_font, footer_size)
-        link_text_1 = "app.betterchoices.vote"
-        link_text_2 = "betterchoices.vote"
-        separator = " | "
-        
-        # Calculate total width for centering
-        link1_width = canvas.stringWidth(link_text_1, footer_font, footer_size)
-        sep_width = canvas.stringWidth(separator, footer_font, footer_size)
-        link2_width = canvas.stringWidth(link_text_2, footer_font, footer_size)
-        total_width = link1_width + sep_width + link2_width
-        
-        # Starting x position to center everything
-        start_x = (page_width - total_width) / 2
-        
-        # Draw first link
-        canvas.setFillColorRGB(0, 0.4, 0.8)  # Blue color for links
-        canvas.drawString(start_x, footer_y, link_text_1)
-        canvas.linkURL("https://app.betterchoices.vote", 
-                      (start_x, footer_y - 2, start_x + link1_width, footer_y + footer_size + 2),
-                      relative=0)
-        
-        # Draw separator
-        canvas.setFillColorRGB(0.4, 0.4, 0.4)  # Grey
-        canvas.drawString(start_x + link1_width, footer_y, separator)
-        
-        # Draw second link
-        canvas.setFillColorRGB(0, 0.4, 0.8)  # Blue color for links
-        canvas.drawString(start_x + link1_width + sep_width, footer_y, link_text_2)
-        canvas.linkURL("https://betterchoices.vote",
-                      (start_x + link1_width + sep_width, footer_y - 2, 
-                       start_x + link1_width + sep_width + link2_width, footer_y + footer_size + 2),
+        canvas.setFillColorRGB(0.4, 0.4, 0.4)
+        canvas.drawCentredString(page_width / 2, footer_y + 12, "This results report is generated from Better Choices for Ohio.")
+
+        # Line 2: clickable link
+        link_text = "betterchoicesohio.org"
+        link_width = canvas.stringWidth(link_text, footer_font, footer_size)
+        link_x = (page_width - link_width) / 2
+        canvas.setFillColorRGB(0, 0.4, 0.8)
+        canvas.drawString(link_x, footer_y, link_text)
+        canvas.linkURL("https://betterchoicesohio.org",
+                      (link_x, footer_y - 2, link_x + link_width, footer_y + footer_size + 2),
                       relative=0)
         
         canvas.restoreState()

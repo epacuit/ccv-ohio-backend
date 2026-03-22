@@ -10,9 +10,9 @@ class Ballot(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
     poll_id = Column(UUID(as_uuid=True), ForeignKey("polls.id", ondelete="CASCADE"), nullable=False, index=True)
     
-    # Rankings as JSONB
-    rankings = Column(JSONB, nullable=False)
-    # Structure: [{"candidate_id": "uuid", "rank": 1}, {"candidate_id": "uuid", "rank": 2}]
+    # Pairwise choices as JSONB
+    pairwise_choices = Column(JSONB, nullable=False)
+    # Structure: [{"cand1_id": "id", "cand2_id": "id", "choice": "cand1"|"cand2"|"tie"}, ...]
     
     # Count for aggregation
     count = Column(Integer, default=1, nullable=False)

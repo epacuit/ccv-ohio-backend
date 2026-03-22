@@ -10,12 +10,13 @@ from app.services.voting_calculation import calculate_mwsl_with_explanation
 
 router = APIRouter()
 
-class DemoBallotRanking(BaseModel):
-    candidate_id: str
-    rank: int
+class DemoPairwiseChoice(BaseModel):
+    cand1_id: str
+    cand2_id: str
+    choice: str  # "cand1", "cand2", "tie", or "neither"
 
 class DemoBallot(BaseModel):
-    rankings: List[DemoBallotRanking]
+    pairwise_choices: List[DemoPairwiseChoice]
     count: int = Field(default=1, ge=1)
 
 class DemoCandidate(BaseModel):
@@ -64,11 +65,11 @@ async def calculate_demo_results(request: DemoCalculateRequest):
     # Create mock ballot objects that match the expected structure
     # CRITICAL: Must accept keyword arguments for consolidate_write_ins_in_ballots
     class MockBallot:
-        def __init__(self, poll_id=None, rankings=None, count=1, 
-                     voter_fingerprint=None, voter_token=None, 
+        def __init__(self, poll_id=None, pairwise_choices=None, count=1,
+                     voter_fingerprint=None, voter_token=None,
                      ip_hash=None, import_batch_id=None, is_test=True):
             self.poll_id = poll_id or "demo"
-            self.rankings = rankings or []
+            self.pairwise_choices = pairwise_choices or []
             self.count = count
             self.write_ins = []  # Empty - demo doesn't support write-ins
             self.voter_fingerprint = voter_fingerprint
@@ -77,15 +78,15 @@ async def calculate_demo_results(request: DemoCalculateRequest):
             self.import_batch_id = import_batch_id
             self.is_test = is_test
             self.updated_at = None
-        
+
         def __repr__(self):
-            return f"MockBallot(rankings={self.rankings}, count={self.count})"
-    
+            return f"MockBallot(pairwise_choices={self.pairwise_choices}, count={self.count})"
+
     try:
         mock_ballots = [
             MockBallot(
                 poll_id="demo",
-                rankings=[{"candidate_id": r.candidate_id, "rank": r.rank} for r in ballot.rankings],
+                pairwise_choices=[{"cand1_id": c.cand1_id, "cand2_id": c.cand2_id, "choice": c.choice} for c in ballot.pairwise_choices],
                 count=ballot.count
             )
             for ballot in request.ballots

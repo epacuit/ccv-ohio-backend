@@ -293,7 +293,7 @@ def generate_ballot_pdf(ballot: Any, poll: Any) -> bytes:
     Generate a professional PDF representation of a ballot.
     
     Args:
-        ballot: Ballot object with rankings and write_ins
+        ballot: Ballot object with pairwise_choices
         poll: Poll object with title, candidates, etc.
     
     Returns:
@@ -399,7 +399,7 @@ def generate_ballot_pdf(ballot: Any, poll: Any) -> bytes:
     
     if not logo_added:
         # Text fallback if no logo
-        header_elements.append(Paragraph("BetterChoices - Better Democracy Through Better Voting", 
+        header_elements.append(Paragraph("Better Choices for Ohio", 
                                         ParagraphStyle('LogoText', parent=heading_style, fontSize=14)))
     
     # Add header elements to story
@@ -441,164 +441,81 @@ def generate_ballot_pdf(ballot: Any, poll: Any) -> bytes:
     # Your Ballot section
     story.append(Paragraph("Your Ballot", heading_style))
     
-    if ballot.rankings and len(ballot.rankings) > 0:
-        # CRITICAL FIX: Handle candidates with proper IDs
-        
+    if ballot.pairwise_choices and len(ballot.pairwise_choices) > 0:
+        # Build candidate name lookup
         candidate_lookup = {}
-        all_candidates = []
-        
-        # Process poll candidates
-        for idx, c in enumerate(poll.candidates):
+        for c in poll.candidates:
             if isinstance(c, dict):
-                # Check if candidate has an ID field
                 cid = c.get('id') or c.get('candidate_id')
-                cname = c.get('name') or c.get('candidate_name') or f"Candidate {idx+1}"
-                
+                cname = c.get('name') or c.get('candidate_name', 'Unknown')
                 if cid:
-                    # Candidate has an ID - use it
-                    candidate_lookup[str(cid)] = {'name': cname, 'is_write_in': False, 'index': idx}
-                else:
-                    # NO ID field - use index-based ID (candidate-0, candidate-1, etc.)
-                    index_id = f"candidate-{idx}"
-                    candidate_lookup[index_id] = {'name': cname, 'is_write_in': False, 'index': idx}
-                    # Also store just the index as a string for flexibility
-                    candidate_lookup[str(idx)] = {'name': cname, 'is_write_in': False, 'index': idx}
-                
-                # Store candidate with its effective ID
-                all_candidates.append({
-                    'id': cid or f"candidate-{idx}",
-                    'name': cname,
-                    'is_write_in': False,
-                    'index': idx
-                })
-            else:
-                # Handle non-dict candidates
-                index_id = f"candidate-{idx}"
-                candidate_lookup[index_id] = {'name': str(c), 'is_write_in': False, 'index': idx}
-                all_candidates.append({
-                    'id': index_id,
-                    'name': str(c),
-                    'is_write_in': False,
-                    'index': idx
-                })
-        
-        # Add write-ins
-        if ballot.write_ins:
-            for write_in_idx, write_in in enumerate(ballot.write_ins):
-                if isinstance(write_in, dict):
-                    wid = write_in.get('id') or write_in.get('candidate_id')
-                    wname = write_in.get('name') or write_in.get('candidate_name')
-                    if wid and wname:
-                        candidate_lookup[str(wid)] = {'name': wname, 'is_write_in': True}
-                        all_candidates.append({
-                            'id': wid,
-                            'name': wname,
-                            'is_write_in': True,
-                            'index': len(poll.candidates) + write_in_idx
-                        })
-        
-        # Create rank lookup
-        rank_lookup = {}
-        for ranking in ballot.rankings:
-            cid = ranking.get('candidate_id')
-            rank = ranking.get('rank')
-            
-            if cid is not None and rank is not None:
-                # Store the rank for this candidate ID
-                rank_lookup[str(cid)] = rank
-                
-                # Also extract index from candidate-N format if present
-                match = re.match(r'candidate-(\d+)', str(cid))
-                if match:
-                    idx = match.group(1)
-                    rank_lookup[idx] = rank
-        
-        # Create ballot table data
-        num_candidates = len(all_candidates)
+                    candidate_lookup[str(cid)] = cname
+
+        # Create matchup table
+        center_style = ParagraphStyle('Center', parent=normal_style, alignment=TA_CENTER)
+
         ballot_table_data = []
-        
+
         # Header row
-        header_row = [Paragraph("<b>Candidate</b>", bold_style)]
-        for i in range(num_candidates):
-            ordinal = "st" if i == 0 else "nd" if i == 1 else "rd" if i == 2 else "th"
-            header_text = f"<b>{i+1}{ordinal}</b>"
-            header_row.append(Paragraph(header_text, ParagraphStyle('CenterBold', parent=bold_style, alignment=TA_CENTER)))
-        ballot_table_data.append(header_row)
-        
-        # Data rows for each candidate
-        for candidate_info in all_candidates:
-            row = []
-            
-            cid = candidate_info['id']
-            cname = candidate_info['name']
-            is_write_in = candidate_info.get('is_write_in', False)
-            
-            # Candidate name with write-in indicator
-            display_name = cname
-            if is_write_in:
-                display_name += " <i>(write-in)</i>"
-            
-            name_paragraph = Paragraph(display_name, normal_style)
-            row.append(name_paragraph)
-            
-            # Find this candidate's rank
-            candidate_rank = rank_lookup.get(str(cid))
-            
-            # Rank columns - use beautiful custom ballot marks
-            for rank_col in range(1, num_candidates + 1):
-                if candidate_rank == rank_col:
-                    # Use the configured beautiful ballot mark
-                    row.append(BALLOT_MARK_STYLE(size=BALLOT_MARK_SIZE))
-                else:
-                    # Empty cell
-                    row.append(Paragraph("", normal_style))
-            
-            ballot_table_data.append(row)
-        
-        # Create ballot table
-        rank_col_width = 0.5*inch
-        name_col_width = 6*inch - (num_candidates * rank_col_width)
-        col_widths = [name_col_width] + [rank_col_width] * num_candidates
-        
+        ballot_table_data.append([
+            Paragraph("<b>Matchup</b>", bold_style),
+            Paragraph("<b>Your Choice</b>", ParagraphStyle('CenterBold', parent=bold_style, alignment=TA_CENTER)),
+        ])
+
+        for choice in ballot.pairwise_choices:
+            cand1_name = candidate_lookup.get(str(choice['cand1_id']), 'Unknown')
+            cand2_name = candidate_lookup.get(str(choice['cand2_id']), 'Unknown')
+            choice_val = choice.get('choice', '')
+
+            matchup_text = f"{cand1_name}  vs  {cand2_name}"
+
+            if choice_val == 'cand1':
+                choice_display = Paragraph(f"<b>{cand1_name}</b>", center_style)
+            elif choice_val == 'cand2':
+                choice_display = Paragraph(f"<b>{cand2_name}</b>", center_style)
+            elif choice_val == 'tie':
+                choice_display = Paragraph("<i>Both selected</i>", center_style)
+            else:
+                choice_display = Paragraph("<i>Neither selected</i>", center_style)
+
+            ballot_table_data.append([
+                Paragraph(matchup_text, normal_style),
+                choice_display,
+            ])
+
+        col_widths = [4.5 * inch, 1.5 * inch]
         ballot_table = Table(ballot_table_data, colWidths=col_widths)
-        
-        # Style the ballot table
+
         table_style = [
-            # Header row styling
             ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
             ('FONTNAME', (0, 0), (-1, 0), get_font_name('normal', use_bold=True)),
             ('FONTSIZE', (0, 0), (-1, 0), 11),
             ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
-            
-            # Data rows styling
             ('FONTNAME', (0, 1), (-1, -1), get_font_name('normal')),
             ('FONTSIZE', (0, 1), (-1, -1), 10),
             ('ALIGN', (0, 1), (0, -1), 'LEFT'),
-            ('ALIGN', (1, 1), (-1, -1), 'CENTER'),
+            ('ALIGN', (1, 1), (1, -1), 'CENTER'),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            
-            # Grid and padding - COMPACT VERSION
             ('GRID', (0, 0), (-1, -1), 1, colors.black),
-            ('TOPPADDING', (0, 0), (-1, -1), 5),  # Reduced from 8
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 5),  # Reduced from 8
-            ('LEFTPADDING', (0, 0), (-1, -1), 4),  # Reduced from 6
-            ('RIGHTPADDING', (0, 0), (-1, -1), 4),  # Reduced from 6
+            ('TOPPADDING', (0, 0), (-1, -1), 5),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+            ('LEFTPADDING', (0, 0), (-1, -1), 4),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 4),
         ]
-        
-        # Add alternating row colors
+
         for i in range(2, len(ballot_table_data), 2):
             table_style.append(('BACKGROUND', (0, i), (-1, i), colors.lightgrey))
-        
+
         ballot_table.setStyle(TableStyle(table_style))
         story.append(ballot_table)
     else:
-        story.append(Paragraph("No rankings recorded.", normal_style))
+        story.append(Paragraph("No choices recorded.", normal_style))
     
     story.append(Spacer(1, 15))  # Reduced from 25
     
     # Results link and QR code section
-    results_url = f"{os.getenv('BASE_URL', 'https://betterchoices.vote')}/results/{poll.short_id}"
+    results_url = f"{os.getenv('BASE_URL', 'https://betterchoicesohio.org')}/results/{poll.short_id}"
     
     story.append(Paragraph("View Results", heading_style))
     
@@ -673,11 +590,11 @@ def generate_ballot_pdf(ballot: Any, poll: Any) -> bytes:
         footer_style
     ))
     story.append(Paragraph(
-        "Powered by BetterChoices - Better Democracy Through Better Voting",
-        footer_bold_style
+        "This ballot is generated from Better Choices for Ohio.",
+        footer_style
     ))
-    story.append(Paragraph("betterchoices.vote", 
-                          ParagraphStyle('Website', parent=footer_style, 
+    story.append(Paragraph("betterchoicesohio.org",
+                          ParagraphStyle('Website', parent=footer_style,
                                        textColor=colors.HexColor('#0066CC'))))
     
     # Build the PDF
@@ -695,7 +612,7 @@ def generate_simple_text_pdf_fallback(ballot: Any, poll: Any) -> bytes:
     """
     content = f"""
 BALLOT CONFIRMATION
-BetterChoices - betterchoices.vote
+Better Choices for Ohio - betterchoicesohio.org
 
 Poll: {poll.title}
 Poll ID: {poll.short_id}
@@ -704,42 +621,32 @@ Submitted: {ballot.submitted_at.strftime('%Y-%m-%d %H:%M UTC') if ballot.submitt
 YOUR BALLOT:
 """
     
-    if ballot.rankings:
-        # Handle index-based candidate references
-        candidate_names = []
-        for idx, c in enumerate(poll.candidates):
+    if ballot.pairwise_choices:
+        candidate_lookup = {}
+        for c in poll.candidates:
             if isinstance(c, dict):
-                name = c.get('name', f'Candidate {idx+1}')
+                cid = c.get('id') or c.get('candidate_id')
+                cname = c.get('name', 'Unknown')
+                if cid:
+                    candidate_lookup[str(cid)] = cname
+
+        for choice in ballot.pairwise_choices:
+            c1 = candidate_lookup.get(str(choice.get('cand1_id')), 'Unknown')
+            c2 = candidate_lookup.get(str(choice.get('cand2_id')), 'Unknown')
+            val = choice.get('choice', '')
+            if val == 'cand1':
+                content += f"  {c1} > {c2}\n"
+            elif val == 'cand2':
+                content += f"  {c2} > {c1}\n"
             else:
-                name = str(c)
-            candidate_names.append(name)
-        
-        sorted_rankings = sorted(ballot.rankings, key=lambda x: x['rank'])
-        
-        for ranking in sorted_rankings:
-            cid = ranking.get('candidate_id')
-            
-            # Extract index from candidate-N format
-            if cid and 'candidate-' in str(cid):
-                try:
-                    idx = int(str(cid).replace('candidate-', ''))
-                    if 0 <= idx < len(candidate_names):
-                        candidate_name = candidate_names[idx]
-                    else:
-                        candidate_name = 'Unknown'
-                except:
-                    candidate_name = 'Unknown'
-            else:
-                candidate_name = 'Unknown'
-            
-            content += f"{ranking['rank']}. {candidate_name}\n"
+                content += f"  {c1} = {c2} (no preference)\n"
     else:
-        content += "No rankings recorded.\n"
+        content += "No choices recorded.\n"
     
-    results_url = f"{os.getenv('BASE_URL', 'https://betterchoices.vote')}/results/{poll.short_id}"
+    results_url = f"{os.getenv('BASE_URL', 'https://betterchoicesohio.org')}/results/{poll.short_id}"
     content += f"\nResults: {results_url}"
     content += f"\nGenerated: {datetime.now().strftime('%Y-%m-%d %H:%M UTC')}"
-    content += "\n\nPowered by BetterChoices"
-    content += "\nbetterchoices.vote"
+    content += "\n\nPowered by Better Choices for Ohio"
+    content += "\nbetterchoicesohio.org"
     
     return content.encode('utf-8')

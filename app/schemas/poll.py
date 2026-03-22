@@ -14,11 +14,9 @@ class CandidateSchema(BaseModel):
     is_write_in: bool = False
 
 class PollSettingsSchema(BaseModel):
-    allow_ties: bool = True
-    require_complete_ranking: bool = False
+    require_all_matchups: bool = False
     randomize_options: bool = False
-    allow_write_ins: bool = False
-    allow_vote_updates: bool = True  # Allow voters to change their vote
+    allow_vote_updates: bool = True
     show_live_results: bool = False
     results_visibility: str = "public"
     anonymize_voters: bool = True

@@ -1,44 +1,64 @@
 # app/services/voting_calculation.py
 from typing import List, Dict, Any, Tuple
 from collections import defaultdict
-from pref_voting.profiles_with_ties import ProfileWithTies
-from pref_voting.pairwise_profiles import PairwiseProfile
-from .ballot_process_rules import ballot_to_pairwise, infer_pairwise_comparison_from_ballot_alaska_rules
+from pref_voting.pairwise_profiles import PairwiseProfile, PairwiseBallot
 
 
 def create_profile_from_ballots(
     ballots: List[Any],
     candidates: List[Dict[str, Any]]
 ) -> Tuple[PairwiseProfile, List[str], Dict[str, str]]:
-    
-    from .ballot_process_rules import consolidate_write_ins_in_ballots, create_consolidated_candidate_list
-    
-    # Consolidate write-ins using NLTK
-    consolidated_ballots, name_mapping = consolidate_write_ins_in_ballots(ballots)
-    
-    # Create complete candidate list
-    all_candidates, consolidation_mapping = create_consolidated_candidate_list(candidates, ballots)
-    
-    # Rest of function stays the same
-    candidate_ids = [c['id'] for c in all_candidates]
-    candidate_names = {c['id']: c['name'] for c in all_candidates}
-    id_to_index = {cid: i for i, cid in enumerate(candidate_ids)}
-    
-    # Convert ballots to pref_voting format
-    rankings_list = []
-    rcounts = []
-    
-    for ballot in consolidated_ballots:
-        ranking = {}
-        for item in ballot.rankings:
-            if item['candidate_id'] in id_to_index:
-                cand_idx = id_to_index[item['candidate_id']]
-                ranking[cand_idx] = item['rank']
-        
-        rankings_list.append(ranking)
-        rcounts.append(ballot.count)
+    """
+    Create a PairwiseProfile directly from pairwise choice ballots.
 
-    profile = PairwiseProfile([ballot_to_pairwise(b, [id_to_index[c_id] for c_id in candidate_ids], infer_pairwise_comparison_from_ballot_alaska_rules) for b in rankings_list], rcounts=rcounts)
+    Each ballot's pairwise_choices field contains pairwise choices:
+    [{"cand1_id": "...", "cand2_id": "...", "choice": "cand1"|"cand2"|"tie"}, ...]
+
+    Creates PairwiseBallot objects directly using pref_voting library.
+    """
+    candidate_ids = [c['id'] for c in candidates]
+    candidate_names = {c['id']: c['name'] for c in candidates}
+    id_to_index = {cid: i for i, cid in enumerate(candidate_ids)}
+
+    pairwise_ballots = []
+    rcounts = []
+
+    for ballot in ballots:
+        comparisons = []
+
+        for choice in ballot.pairwise_choices:
+            cand1_id = choice.get('cand1_id')
+            cand2_id = choice.get('cand2_id')
+            choice_val = choice.get('choice')
+
+            if cand1_id not in id_to_index or cand2_id not in id_to_index:
+                continue
+
+            idx1 = id_to_index[cand1_id]
+            idx2 = id_to_index[cand2_id]
+
+            menu = {idx1, idx2}
+
+            if choice_val == 'cand1':
+                # Strict preference for cand1
+                chosen = {idx1}
+            elif choice_val == 'cand2':
+                # Strict preference for cand2
+                chosen = {idx2}
+            elif choice_val == 'tie':
+                # Indifference
+                chosen = {idx1, idx2}
+            else:
+                continue
+
+            comparisons.append((menu, chosen))
+
+        if comparisons:
+            pb = PairwiseBallot(comparisons, candidates=list(range(len(candidate_ids))))
+            pairwise_ballots.append(pb)
+            rcounts.append(ballot.count)
+
+    profile = PairwiseProfile(pairwise_ballots, rcounts=rcounts)
 
     return profile, candidate_ids, candidate_names
 
@@ -226,14 +246,14 @@ def get_detailed_pairwise_results(
                 total_voters = profile.num_voters
                 
                 # Count ties using the profile's methods!
-                # We need to check how many voters ranked them as indifferent
+                # We need to check how many voters marked them as indifferent
                 ties = 0
                 for ballot, count in zip(*profile.comparisons_counts):
                     # Check if this ballot has them as indifferent (tied)
                     if ballot.indiff(i, j):
                         ties += count
                 
-                # Calculate undefined (didn't rank one or both)
+                # Calculate undefined (didn't compare one or both)
                 # Total = i_over_j + j_over_i + ties + undefined
                 undefined = total_voters - i_over_j - j_over_i - ties
                 undefined = max(0, undefined)  # Can't be negative
@@ -248,179 +268,60 @@ def get_detailed_pairwise_results(
     
     return detailed_results
 
-# ORIGINAL FUNCTION - KEPT FOR BACKWARDS COMPATIBILITY
-def get_ballot_statistics(
-    profile: PairwiseProfile, 
-    original_ballots: List[Any] = None,
-    candidates: List[Dict[str, Any]] = None  # ADD CANDIDATES PARAMETER
-) -> Dict[str, Any]:
-    """Get ballot statistics from profile including skipped ranks and all candidates ranked - ORIGINAL VERSION"""
-    
-    total_votes = profile.num_voters
-    
-    bullet_votes = sum([
-        c for b, c in zip(*profile.comparisons_counts) 
-        if b.is_transitive(profile.candidates) 
-        and b.is_coherent() 
-        and not b.is_empty() 
-        and b.to_ranking().is_bullet_vote()
-    ])
-    
-    linear_orders = sum([
-        c for b, c in zip(*profile.comparisons_counts) 
-        if b.is_transitive(profile.candidates) 
-        and b.is_coherent() 
-        and not b.is_empty() 
-        and b.to_ranking().is_linear(len(profile.candidates))
-    ])
-    
-    # Calculate truncated linear orders
-    # These are rankings that are linear (no ties) but don't include all candidates
-    truncated_linear_orders = sum([
-        c for b, c in zip(*profile.comparisons_counts) 
-        if b.is_transitive(profile.candidates) 
-        and b.is_coherent() 
-        and not b.is_empty() 
-        and b.to_ranking().is_truncated_linear(len(profile.candidates))
-        and not b.to_ranking().is_bullet_vote()  # And NOT a bullet vote
-    ])
-    
-    has_tie = sum([
-        c for b, c in zip(*profile.comparisons_counts) 
-        if b.has_tie()
-    ])
-    
-    # Calculate statistics from original ballots if provided
-    has_skipped_ranks = 0
-    all_candidates_ranked = 0  # NEW STATISTIC
-    
-    if original_ballots and candidates:
-        from .ballot_process_rules import has_skipped_rank as check_skipped_ranks
-        
-        # Get the base candidate IDs from the poll
-        base_candidate_ids = {c['id'] for c in candidates}
-        
-        for ballot in original_ballots:
-            # Check if this ballot has skipped ranks
-            if ballot.rankings:
-                # Convert list format to dict format for the check
-                ranking_dict = {item['candidate_id']: item['rank'] for item in ballot.rankings}
-                
-                # Check for skipped ranks
-                if ranking_dict and check_skipped_ranks(ranking_dict):
-                    has_skipped_ranks += ballot.count
-                
-                # Check if all candidates are ranked FOR THIS BALLOT
-                # A ballot ranks all candidates if it ranks:
-                # 1. All base poll candidates
-                # 2. Plus any write-ins THIS ballot added
-                
-                # Get this ballot's write-in IDs
-                ballot_write_in_ids = set()
-                if hasattr(ballot, 'write_ins') and ballot.write_ins:
-                    for write_in in ballot.write_ins:
-                        if isinstance(write_in, dict) and 'id' in write_in:
-                            ballot_write_in_ids.add(write_in['id'])
-                
-                # Required candidates for THIS ballot = base candidates + its own write-ins
-                required_candidates = base_candidate_ids | ballot_write_in_ids
-                
-                # Get the candidates this ballot actually ranked
-                ranked_candidate_ids = set(ranking_dict.keys())
-                
-                # Check if this ballot ranked all its required candidates
-                if ranked_candidate_ids >= required_candidates:  # >= means "is superset of or equal to"
-                    all_candidates_ranked += ballot.count
-    
-    return {
-        "total_votes": total_votes,
-        "bullet_votes": bullet_votes,
-        "linear_orders": linear_orders,
-        "truncated_linear_orders": truncated_linear_orders,  
-        "has_tie": has_tie,
-        "has_skipped_ranks": has_skipped_ranks,
-        "all_candidates_ranked": all_candidates_ranked  # NEW STATISTIC
-    }
-
-# NEW FUNCTION WITH CLEANER STATISTICS
 def get_ballot_statistics_v2(
-    profile: PairwiseProfile, 
+    profile: PairwiseProfile,
     original_ballots: List[Any] = None,
     candidates: List[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
-    Get ballot statistics with user-friendly terminology:
-    - ranked_almost_all: % who ranked all candidates (except possibly 1)
-    - partial_ranking: % who left at least 2 candidates unranked  
-    - had_gaps: % with skipped ranks
-    - single_choice_only: % bullet votes (ranked only first choice)
+    Get ballot statistics for pairwise comparison voting:
+    - completed_all_matchups: % who filled in every head-to-head matchup
+    - partial_ballot: % who skipped at least one matchup
+    - has_ties: % who indicated indifference (selected both) in at least one matchup
     """
-    
+
     total_votes = profile.num_voters
-    
-    # Initialize counters
-    ranked_almost_all = 0
-    partial_ranking = 0
-    had_gaps = 0
-    single_choice_only = 0
-    
-    if original_ballots and candidates:
-        from .ballot_process_rules import has_skipped_rank as check_skipped_ranks
-        
-        # Get the base candidate IDs from the poll
-        base_candidate_ids = {c['id'] for c in candidates}
-        
+    num_candidates = len(candidates) if candidates else len(profile.candidates)
+    total_matchups = (num_candidates * (num_candidates - 1)) // 2
+
+    completed_all = 0
+    partial = 0
+    has_ties_count = 0
+
+    if original_ballots:
         for ballot in original_ballots:
-            if ballot.rankings:
-                # Convert to dict format
-                ranking_dict = {item['candidate_id']: item['rank'] for item in ballot.rankings}
-                num_ranked = len(ranking_dict)
-                
-                # Get total candidates for this ballot (including any write-ins it added)
-                ballot_write_in_ids = set()
-                if hasattr(ballot, 'write_ins') and ballot.write_ins:
-                    for write_in in ballot.write_ins:
-                        if isinstance(write_in, dict) and 'id' in write_in:
-                            ballot_write_in_ids.add(write_in['id'])
-                
-                # Total candidates available for this ballot
-                total_candidates_for_ballot = len(base_candidate_ids | ballot_write_in_ids)
-                
-                # Check for gaps (we'll use this multiple times)
-                has_gaps_flag = ranking_dict and check_skipped_ranks(ranking_dict)
-                
-                # 1. Ranked (almost) all candidates - all except possibly 1, WITH NO GAPS
-                if num_ranked >= (total_candidates_for_ballot - 1) and not has_gaps_flag:
-                    ranked_almost_all += ballot.count
-                
-                # 2. Partial ranking - ranked 2+ but not all (excludes bullet votes)
-                if 2 <= num_ranked <= (total_candidates_for_ballot - 2):
-                    partial_ranking += ballot.count
-                
-                # 3. Has gaps?
-                if has_gaps_flag:
-                    had_gaps += ballot.count
-                
-                # 4. Single choice only (bullet vote)?
-                if num_ranked == 1:
-                    single_choice_only += ballot.count
-    
-    # Convert to percentages
+            if ballot.pairwise_choices:
+                # Count actual selections (not 'neither')
+                active_choices = sum(
+                    1 for c in ballot.pairwise_choices
+                    if c.get('choice') in ('cand1', 'cand2', 'tie')
+                )
+
+                if active_choices >= total_matchups:
+                    completed_all += ballot.count
+                else:
+                    partial += ballot.count
+
+                has_tie = any(
+                    c.get('choice') == 'tie'
+                    for c in ballot.pairwise_choices
+                )
+                if has_tie:
+                    has_ties_count += ballot.count
+
     if total_votes > 0:
         return {
             "total_votes": total_votes,
-            "ranked_almost_all": round((ranked_almost_all / total_votes) * 100, 1),
-            "partial_ranking": round((partial_ranking / total_votes) * 100, 1),
-            "had_gaps": round((had_gaps / total_votes) * 100, 1),
-            "single_choice_only": round((single_choice_only / total_votes) * 100, 1)
+            "completed_all_matchups": round((completed_all / total_votes) * 100, 1),
+            "partial_ballot": round((partial / total_votes) * 100, 1),
+            "has_ties": round((has_ties_count / total_votes) * 100, 1),
         }
     else:
         return {
             "total_votes": 0,
-            "ranked_almost_all": 0,
-            "partial_ranking": 0,
-            "had_gaps": 0,
-            "single_choice_only": 0
+            "completed_all_matchups": 0,
+            "partial_ballot": 0,
+            "has_ties": 0,
         }
 
 def get_pairwise_matrix(

@@ -1,8 +1,12 @@
 # app/api/v1/ballots.py - WITH CACHE INVALIDATION, TOKEN SUPPORT, AND GET BALLOT
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, update
 from typing import Dict, Any, List
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
+limiter = Limiter(key_func=get_remote_address)
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 import hashlib
@@ -92,8 +96,7 @@ async def get_voter_ballot(
             "has_voted": True,
             "ballot": {
                 "ballot_id": "...",
-                "rankings": [...],
-                "write_ins": [...],
+                "pairwise_choices": [...],
                 "updated_at": "..."
             }
         }
@@ -159,8 +162,7 @@ async def get_voter_ballot(
         "has_voted": True,
         "ballot": {
             "ballot_id": str(ballot.id),
-            "rankings": ballot.rankings,
-            "write_ins": ballot.write_ins or [],
+            "pairwise_choices": ballot.pairwise_choices,
             "updated_at": ballot.updated_at.isoformat() if ballot.updated_at else None
         }
     }
@@ -170,11 +172,13 @@ async def get_voter_ballot(
 # ==============================================================================
 
 @router.post("/")
+@limiter.limit("20/minute")
 async def submit_ballot(
+    request: Request,
     ballot_data: Dict[str, Any],
     db: AsyncSession = Depends(get_db)
 ):
-    """Submit or update a ballot with proper ID handling for write-ins"""
+    """Submit or update a ballot"""
     
     # Parse poll_id - handle both short_id and UUID
     poll_id_input = ballot_data.get('poll_id')
@@ -221,53 +225,46 @@ async def submit_ballot(
         raise HTTPException(status_code=400, detail="Poll voting deadline has passed")
     
     # ========== VALIDATION: Ballot Data ==========
-    rankings = ballot_data.get('rankings', [])
-    write_ins = ballot_data.get('write_ins', [])
-    
+    pairwise_choices = ballot_data.get('pairwise_choices', [])
+
     # Get valid candidate IDs from poll
     valid_candidate_ids = {c['id'] for c in poll.candidates}
-    
-    # Check if write-ins are allowed
-    if write_ins and not poll.settings.get('allow_write_ins', False):
-        raise HTTPException(status_code=400, detail="Write-in candidates are not allowed for this poll")
-    
-    # Validate candidate IDs and check for write-ins
-    for ranking in rankings:
-        candidate_id = ranking.get('candidate_id')
-        
-        # Check if it's a write-in
-        if candidate_id and candidate_id.startswith('write-in-'):
-            if not poll.settings.get('allow_write_ins', False):
-                raise HTTPException(status_code=400, detail="Write-in candidates are not allowed for this poll")
-        elif candidate_id not in valid_candidate_ids:
-            raise HTTPException(status_code=400, detail=f"Invalid candidate ID: {candidate_id}")
-    
-    # Check for duplicate candidates
-    candidate_ids_in_ballot = [r['candidate_id'] for r in rankings]
-    if len(candidate_ids_in_ballot) != len(set(candidate_ids_in_ballot)):
-        raise HTTPException(status_code=400, detail="Cannot rank the same candidate multiple times")
-    
-    # Check for ties when not allowed
-    if not poll.settings.get('allow_ties', True):
-        ranks = [r['rank'] for r in rankings]
-        if len(ranks) != len(set(ranks)):
-            raise HTTPException(status_code=400, detail="Tied rankings are not allowed for this poll")
-    
-    # Check num_ranks limit
-    num_ranks = poll.settings.get('num_ranks')
-    if num_ranks and len(rankings) > num_ranks:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Cannot rank more than {num_ranks} candidates"
-        )
-    
-    # Check complete ranking requirement
-    if poll.settings.get('require_complete_ranking', False):
+
+    if not pairwise_choices:
+        raise HTTPException(status_code=400, detail="No pairwise choices provided")
+
+    # Validate pairwise choices
+    seen_pairs = set()
+    for choice in pairwise_choices:
+        cand1_id = choice.get('cand1_id')
+        cand2_id = choice.get('cand2_id')
+        choice_val = choice.get('choice')
+
+        if not cand1_id or not cand2_id:
+            raise HTTPException(status_code=400, detail="Each pairwise choice must have cand1_id and cand2_id")
+
+        if cand1_id not in valid_candidate_ids:
+            raise HTTPException(status_code=400, detail=f"Invalid candidate ID: {cand1_id}")
+        if cand2_id not in valid_candidate_ids:
+            raise HTTPException(status_code=400, detail=f"Invalid candidate ID: {cand2_id}")
+
+        if choice_val not in ('cand1', 'cand2', 'tie', 'neither'):
+            raise HTTPException(status_code=400, detail=f"Invalid choice value: {choice_val}. Must be 'cand1', 'cand2', 'tie', or 'neither'")
+
+        # Check for duplicate pairs
+        pair_key = frozenset([cand1_id, cand2_id])
+        if pair_key in seen_pairs:
+            raise HTTPException(status_code=400, detail=f"Duplicate matchup for {cand1_id} vs {cand2_id}")
+        seen_pairs.add(pair_key)
+
+    # Check require_all_matchups setting
+    if poll.settings.get('require_all_matchups', False):
         num_candidates = len(poll.candidates)
-        if len(rankings) < num_candidates:
+        expected_matchups = (num_candidates * (num_candidates - 1)) // 2
+        if len(pairwise_choices) < expected_matchups:
             raise HTTPException(
                 status_code=400,
-                detail=f"Must rank all {num_candidates} candidates"
+                detail=f"Must complete all {expected_matchups} matchups"
             )
     
     # Extract voter token
@@ -288,21 +285,6 @@ async def submit_ballot(
         
         if not voter:
             raise HTTPException(status_code=403, detail="Invalid voting token")
-    
-    # CRITICAL: Ensure write-ins have proper IDs (only if they passed validation)
-    if write_ins:
-        write_ins = ensure_write_ins_have_ids(write_ins)
-        
-        # Validate write-ins don't conflict with poll candidates
-        from app.services.ballot_process_rules import normalize_candidate_name, find_candidate_matches
-        
-        for write_in in write_ins:
-            matches = find_candidate_matches(write_in['name'], poll.candidates)
-            if matches:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Write-in '{write_in['name']}' conflicts with existing candidate '{matches[0]['name']}'"
-                )
     
     # Hash sensitive data
     # Dev mode: auto-generate fingerprint if not provided
@@ -345,8 +327,8 @@ async def submit_ballot(
             )
         
         # Update existing ballot (for both public and private polls)
-        existing_ballot.rankings = rankings
-        existing_ballot.write_ins = write_ins  # Now with proper IDs
+        existing_ballot.pairwise_choices = pairwise_choices
+        existing_ballot.write_ins = []
         existing_ballot.updated_at = datetime.now(timezone.utc)
         existing_ballot.ip_hash = ip_hash
         
@@ -362,16 +344,15 @@ async def submit_ballot(
             "message": "Vote updated",
             "ballot_id": str(existing_ballot.id),
             "ballot_data": {
-                "rankings": existing_ballot.rankings,
-                "write_ins": existing_ballot.write_ins
+                "pairwise_choices": existing_ballot.pairwise_choices,
             }
         }
     else:
         # Create new ballot
         ballot = Ballot(
             poll_id=poll_id,
-            rankings=rankings,
-            write_ins=write_ins,  # Now with proper IDs
+            pairwise_choices=pairwise_choices,
+            write_ins=[],
             count=ballot_data.get('count', 1),
             voter_fingerprint=voter_fingerprint,
             voter_token=voter_token,
@@ -393,8 +374,7 @@ async def submit_ballot(
             "message": "Vote recorded",
             "ballot_id": str(ballot.id),
             "ballot_data": {
-                "rankings": ballot.rankings,
-                "write_ins": ballot.write_ins
+                "pairwise_choices": ballot.pairwise_choices,
             }
         }
 
@@ -453,7 +433,7 @@ async def check_existing_ballot(
             "ballot": {
                 "id": str(ballot.id),
                 "submitted_at": ballot.submitted_at.isoformat() if ballot.submitted_at else None,
-                "rankings": ballot.rankings,
+                "pairwise_choices": ballot.pairwise_choices,
                 "write_ins": ballot.write_ins if ballot.write_ins else []
             }
         }
@@ -462,6 +442,49 @@ async def check_existing_ballot(
             "has_voted": False,
             "ballot": None
         }
+
+@router.get("/poll/{poll_id}/public")
+async def get_poll_ballots_public(
+    poll_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Get all ballots for a poll - public, anonymized (choices and counts only)"""
+
+    poll = None
+    if isinstance(poll_id, str):
+        stmt = select(Poll).where(Poll.short_id == poll_id)
+        result = await db.execute(stmt)
+        poll = result.scalar_one_or_none()
+
+        if not poll:
+            try:
+                poll_uuid = UUID(poll_id)
+                stmt = select(Poll).where(Poll.id == poll_uuid)
+                result = await db.execute(stmt)
+                poll = result.scalar_one_or_none()
+            except ValueError:
+                pass
+
+    if not poll:
+        stmt = select(Poll).where(Poll.slug == poll_id)
+        result = await db.execute(stmt)
+        poll = result.scalar_one_or_none()
+
+    if not poll:
+        raise HTTPException(status_code=404, detail="Poll not found")
+
+    stmt = select(Ballot).where(Ballot.poll_id == poll.id)
+    result = await db.execute(stmt)
+    ballots = result.scalars().all()
+
+    return [
+        {
+            "pairwise_choices": b.pairwise_choices,
+            "count": b.count,
+        }
+        for b in ballots
+    ]
+
 
 @router.get("/poll/{poll_id}")
 async def get_poll_ballots(
@@ -504,7 +527,7 @@ async def get_poll_ballots(
     return [
         {
             "id": str(b.id),
-            "rankings": b.rankings,
+            "pairwise_choices": b.pairwise_choices,
             "write_ins": b.write_ins,
             "count": b.count,
             "submitted_at": b.submitted_at.isoformat() if b.submitted_at else None,
@@ -605,124 +628,57 @@ async def bulk_import_ballots(
     if poll.admin_token != admin_token:
         raise HTTPException(status_code=403, detail="Invalid admin token")
     
-    # Process write-ins in imported ballots
-    for ballot_data in ballots_data:
-        if ballot_data.get('write_ins'):
-            ballot_data['write_ins'] = ensure_write_ins_have_ids(ballot_data['write_ins'])
-    
-    # Detect maximum rank in imported data
-    max_rank_found = 0
-    rank_4_count = 0
-    for ballot_data in ballots_data:
-        ballot_max = 0
-        for ranking in ballot_data.get('rankings', []):
-            rank = ranking.get('rank', 0)
-            max_rank_found = max(max_rank_found, rank)
-            ballot_max = max(ballot_max, rank)
-        if ballot_max == 4:
-            rank_4_count += ballot_data.get('count', 1)
-    
-    # Log what we found
-    print(f"\n📊 IMPORT STATISTICS for poll {poll.short_id}:")
-    print(f"   - Total ballot patterns: {len(ballots_data)}")
-    print(f"   - Maximum rank found: {max_rank_found}")
-    print(f"   - Ballots with rank 4: {rank_4_count} votes")
-    print(f"   - Poll has {len(poll.candidates)} candidates")
-    
-    # ALWAYS update poll's num_ranks based on the data
-    # The poll should display at least as many columns as the highest rank found
-    num_ranks_needed = max(max_rank_found, len(poll.candidates))
-    current_num_ranks = poll.settings.get('num_ranks') if poll.settings else None
-    
-    # Update if needed
-    if current_num_ranks != num_ranks_needed:
-        if not poll.settings:
-            poll.settings = {}
-        poll.settings['num_ranks'] = num_ranks_needed
-        poll.updated_at = datetime.now(timezone.utc)
-        
-        print(f"\n✅ POLL {poll.short_id} RANK CONFIGURATION:")
-        print(f"   - Max rank in imported data: {max_rank_found}")
-        print(f"   - Number of candidates: {len(poll.candidates)}")
-        print(f"   - Setting num_ranks = {num_ranks_needed} (was {current_num_ranks})")
-        if max_rank_found > len(poll.candidates):
-            print(f"   - ⚠️ Alaska 2022 scenario detected: rank {max_rank_found} for {len(poll.candidates)} candidates")
-            print(f"   - Frontend will display {num_ranks_needed} columns to show all votes")
-        
-        await db.commit()
-        await db.refresh(poll)
-    
     # Aggregate identical ballots for efficiency
     from collections import defaultdict
-    ranking_counts = defaultdict(int)
-    
+    ballot_counts = defaultdict(int)
+
     for ballot in ballots_data:
-        # Create hashable key from rankings and write-ins
-        ranking_key = tuple(
-            (r['candidate_id'], r['rank']) 
-            for r in sorted(ballot['rankings'], key=lambda x: (x['rank'], x['candidate_id']))
+        # Create hashable key from pairwise choices
+        choices_key = tuple(
+            (c['cand1_id'], c['cand2_id'], c['choice'])
+            for c in sorted(ballot.get('pairwise_choices', []),
+                          key=lambda x: (x['cand1_id'], x['cand2_id']))
         )
-        
-        # Include write-ins in the key
-        write_in_key = tuple(
-            (w['id'], w['name']) 
-            for w in sorted(ballot.get('write_ins', []), key=lambda x: x.get('id', ''))
-        ) if ballot.get('write_ins') else ()
-        
-        full_key = (ranking_key, write_in_key)
+
         count = ballot.get('count', 1)
-        ranking_counts[full_key] += count
-    
+        ballot_counts[choices_key] += count
+
     # Create ballot records
     import_batch_id = f"import_{poll_id}_{datetime.now(timezone.utc).isoformat()}"
     created_count = 0
     total_votes = 0
-    
-    for (ranking_tuple, write_in_tuple), count in ranking_counts.items():
-        # Convert back to rankings format
-        rankings = [
-            {"candidate_id": cid, "rank": rank}
-            for cid, rank in ranking_tuple
+
+    for choices_tuple, count in ballot_counts.items():
+        pairwise_choices = [
+            {"cand1_id": c1, "cand2_id": c2, "choice": ch}
+            for c1, c2, ch in choices_tuple
         ]
-        
-        # Convert back to write-ins format
-        write_ins = [
-            {"id": wid, "name": wname, "is_write_in": True}
-            for wid, wname in write_in_tuple
-        ] if write_in_tuple else []
-        
+
         ballot = Ballot(
             poll_id=poll_id,
-            rankings=rankings,
-            write_ins=write_ins,
+            pairwise_choices=pairwise_choices,
+            write_ins=[],
             count=count,
             import_batch_id=import_batch_id,
             is_test=False
         )
-        
+
         db.add(ballot)
         created_count += 1
         total_votes += count
-    
+
     await db.commit()
-    
+
     # INVALIDATE CACHED RESULTS AFTER BULK IMPORT
     await invalidate_results_cache(poll_id, db)
     await db.commit()
-    
-    # Get the updated poll's num_ranks for confirmation
-    final_num_ranks = poll.settings.get('num_ranks') if poll.settings else len(poll.candidates)
-    
+
     return {
         "success": True,
         "message": f"Imported {total_votes} votes in {created_count} ballot records",
         "import_batch_id": import_batch_id,
         "unique_patterns": created_count,
         "total_votes": total_votes,
-        "poll_num_ranks": final_num_ranks,
-        "max_rank_found": max_rank_found,
-        "num_candidates": len(poll.candidates),
-        "note": f"Poll will display {final_num_ranks} ranking columns"
     }
 
 @router.delete("/poll/{poll_id}/clear")
