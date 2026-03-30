@@ -143,19 +143,24 @@ def create_head_to_head_bar_chart(cand1_name, cand2_name, cand1_votes, cand2_vot
     # Calculate percentages - ONLY from voters with opinion
     total_with_opinion = cand1_votes + cand2_votes
     if total_with_opinion == 0:
-        return drawing
-    
-    cand1_pct = (cand1_votes / total_with_opinion) * 100
-    cand2_pct = (cand2_votes / total_with_opinion) * 100
+        if is_tie:
+            # All votes were ties (both selected) — show 50/50
+            cand1_pct = 50
+            cand2_pct = 50
+        else:
+            return drawing
+    else:
+        cand1_pct = (cand1_votes / total_with_opinion) * 100
+        cand2_pct = (cand2_votes / total_with_opinion) * 100
     
     # Professional muted colors
     if is_tie:
-        winner_color = colors.HexColor('#9e9e9e')
-        loser_color = colors.HexColor('#9e9e9e')
-        winner_bg = colors.HexColor('#f5f5f5')
-        loser_bg = colors.HexColor('#f5f5f5')
-        winner_text = colors.HexColor('#666666')
-        loser_text = colors.HexColor('#666666')
+        winner_color = colors.HexColor('#78909c')  # Blue-grey
+        loser_color = colors.HexColor('#78909c')
+        winner_bg = colors.HexColor('#eceff1')     # Light blue-grey
+        loser_bg = colors.HexColor('#eceff1')
+        winner_text = colors.HexColor('#37474f')   # Dark blue-grey
+        loser_text = colors.HexColor('#37474f')
     else:
         winner_color = colors.HexColor('#66bb6a')  # Muted green
         loser_color = colors.HexColor('#ef5350')   # Muted red  
@@ -470,7 +475,7 @@ def generate_results_pdf(poll: Dict, results: Dict, base_url: str = None) -> byt
     winners = results.get('winners', [])
     winner_color = get_winner_color(winner_type)
     
-    story.append(Paragraph("Consensus Choice Winner", heading_style))
+    story.append(Paragraph("Winner", heading_style))
     
     # Winner box
     if winner_type == 'tie' and winners:
