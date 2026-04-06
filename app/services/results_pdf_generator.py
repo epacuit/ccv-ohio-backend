@@ -130,7 +130,7 @@ def get_winner_color(winner_type):
     }
     return colors_map.get(winner_type, colors.HexColor('#757575'))
 
-def create_head_to_head_bar_chart(cand1_name, cand2_name, cand1_votes, cand2_votes, is_tie=False, margin=0, width=5.5*inch, height=1.1*inch):
+def create_head_to_head_bar_chart(cand1_name, cand2_name, cand1_votes, cand2_votes, is_tie=False, margin=0, width=5.5*inch, height=1.1*inch, is_smallest_loss=False):
     """
     Create a clean, professional head-to-head comparison chart.
     Vote boxes and bars use EXACT same widths for perfect alignment.
@@ -208,28 +208,35 @@ def create_head_to_head_bar_chart(cand1_name, cand2_name, cand1_votes, cand2_vot
         # Percentage inside bar - SMALLER FONT
         if cand1_pct >= 15:
             drawing.add(String(cand1_width / 2, bar_y + bar_height / 2 - 3,
-                              f"{round(cand1_pct)}%",
+                              f"{cand1_pct:.1f}%",
                               fontSize=10, fontName=get_font_name('normal', use_bold=True),
                               fillColor=colors.white, textAnchor='middle'))
-    
+
     if cand2_width > 0:
         drawing.add(Rect(cand1_width, bar_y, cand2_width, bar_height,
                         fillColor=loser_color, strokeColor=None))
         # Percentage inside bar - SMALLER FONT
         if cand2_pct >= 15:
             drawing.add(String(cand1_width + cand2_width / 2, bar_y + bar_height / 2 - 3,
-                              f"{round(cand2_pct)}%",
+                              f"{cand2_pct:.1f}%",
                               fontSize=10, fontName=get_font_name('normal', use_bold=True),
                               fillColor=colors.white, textAnchor='middle'))
     
     # === MARGIN TEXT (Below bar) ===
     if not is_tie and margin > 0:
         margin_y = bar_y - 12
-        margin_text = f"{cand1_name} wins by a margin of {int(margin):,}"
+        margin_text = f"{cand1_name} defeats {cand2_name} by a margin of {int(cand1_votes):,} - {int(cand2_votes):,} = {int(margin):,}"
+        margin_color = colors.HexColor('#2e7d32')
+        margin_font_size = 8
+        if is_smallest_loss:
+            # Highlight smallest loss with a background box
+            margin_text = f"** {cand1_name} defeats {cand2_name} by a margin of {int(cand1_votes):,} - {int(cand2_votes):,} = {int(margin):,} (smallest loss) **"
+            margin_color = colors.HexColor('#e65100')  # Dark orange
+            margin_font_size = 9
         drawing.add(String(width / 2, margin_y,
                           margin_text,
-                          fontSize=8, fontName=get_font_name('normal', use_bold=True),
-                          fillColor=colors.HexColor('#2e7d32'),
+                          fontSize=margin_font_size, fontName=get_font_name('normal', use_bold=True),
+                          fillColor=margin_color,
                           textAnchor='middle'))
     elif is_tie:
         margin_y = bar_y - 12
@@ -688,9 +695,20 @@ def generate_results_pdf(poll: Dict, results: Dict, base_url: str = None) -> byt
         from functools import cmp_to_key
         all_matchups.sort(key=cmp_to_key(sort_matchups))
         
+        # Determine the smallest loss matchup (for highlighting)
+        # The smallest loss is the loss with the smallest margin where the overall winner lost
+        smallest_loss_key = None
+        if winner_type == 'smallest_loss' and winner:
+            smallest_margin = float('inf')
+            for matchup in all_matchups:
+                if not matchup['isTie'] and matchup['loser'] == winner:
+                    if matchup['margin'] < smallest_margin:
+                        smallest_margin = matchup['margin']
+                        smallest_loss_key = (matchup['winner'], matchup['loser'])
+
         # Create comparison visuals with professional design
         comparison_elements = []
-        
+
         for matchup in all_matchups:
             # Create title - show matchup
             if matchup['isTie']:
@@ -718,13 +736,19 @@ def generate_results_pdf(poll: Dict, results: Dict, base_url: str = None) -> byt
                              spaceAfter=8)
             )
             
+            # Check if this matchup is the smallest loss
+            is_smallest = (smallest_loss_key is not None and
+                          not matchup['isTie'] and
+                          smallest_loss_key == (matchup['winner'], matchup['loser']))
+
             # Create the clean, aligned bar chart
             bar_chart = create_head_to_head_bar_chart(
                 first_cand, second_cand,
                 first_votes, second_votes,
                 is_tie=matchup['isTie'],
                 margin=margin,
-                width=page_content_width - 10, height=1*inch
+                width=page_content_width - 10, height=1*inch,
+                is_smallest_loss=is_smallest
             )
             
             comparison_elements.append([title_para])
